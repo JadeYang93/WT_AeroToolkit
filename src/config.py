@@ -7,7 +7,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 应用版本
-APP_VERSION = 'v0.2'
+APP_VERSION = 'v0.2.01'
 
 # TI 计算
 WINDOW_MIN = 10           # 滑动窗口（分钟）

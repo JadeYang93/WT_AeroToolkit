@@ -584,6 +584,20 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # 高 DPI 支持：必须在 QApplication 实例化之前设置。
+    # 启用后 QSS 里的 13px / 15px 等会被视为「逻辑像素」(DIP)，
+    # Qt 按系统 DPI 缩放因子（100% / 125% / 150% / 200%）自动放大字号与布局，
+    # 解决跨显示器（主屏 4K+150%、副屏 1080p+100%）字体大小不一致的问题。
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # DPI 因子取整策略：PassThrough 保留小数（如 1.25/1.5），最精确
+    # （PyQt5 5.14+ 才有此 API，低版本会被忽略）
+    try:
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except AttributeError:
+        pass
+
     app = QApplication(sys.argv)
 
     # 应用图标：窗口标题栏 + 任务栏（src/_assets/icon.png）
