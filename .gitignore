@@ -1,0 +1,70 @@
+# ==========================================================
+# 风场数据统计工具 - .gitignore
+# ==========================================================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ----- 虚拟环境 -----
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# ----- 测试 / 类型检查 / 缓存 -----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# ----- 用户本地配置（包含机器绝对路径，不进仓库） -----
+config/.paths.json
+
+# ----- 用户数据（输入 / 输出 / 日志） -----
+输入数据/
+输出/
+*.log
+logs/
+
+# ----- 临时 / 中间产物 -----
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+.DS_Store
+Thumbs.db
+
+# ----- IDE / 编辑器 -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- Jupyter -----
+.ipynb_checkpoints/
