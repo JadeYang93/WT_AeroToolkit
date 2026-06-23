@@ -18,10 +18,8 @@ echo.
 
 if %errorlevel% neq 0 (
     echo.
-    echo [Failed] exit code %errorlevel%
-    echo 1. Install Python
-    echo 2. pip install PyQt5 pandas matplotlib numpy openpyxl
-    echo 3. Sync latest src/ folder
+    echo [启动失败] exit code %errorlevel%
+    echo 首次使用请先双击「一键部署.bat」配置环境
     echo.
 )
 
