@@ -562,6 +562,13 @@ class MainWindow(QMainWindow):
             )
 
         help_menu.addSeparator()
+
+        # 风场失效分析 SOP（独立于具体模块的流程文档）
+        act_sop = help_menu.addAction('风场失效分析 SOP')
+        act_sop.triggered.connect(
+            lambda: self._show_help('failure_analysis_sop', '风场失效分析 SOP — 帮助')
+        )
+
         act_about = help_menu.addAction('关于工具箱')
         act_about.triggered.connect(
             lambda: self._show_help('about', '关于 — 气动组工具箱')
