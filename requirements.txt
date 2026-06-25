@@ -14,3 +14,4 @@ scipy >= 1.6           # PCHIP 插值（shape_design 后缘修正）
 openpyxl >= 3.0        # Excel 读写（read_only 模式需要 wb.close()）
 matplotlib >= 3.4      # 绘图（TE 对比图、参数分布图）
 psutil >= 5.8          # FOCUS6 进程管理（超时强杀）
+pywin32 >= 305         # CATIA COM 自动化（仅 CATIA 叶片建模模块需要）
