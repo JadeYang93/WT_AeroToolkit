@@ -1,22 +1,26 @@
 # -*- coding: utf-8 -*-
 """CATIA 叶片建模 面板。
 
-侧边栏独立工具。三个步骤 GroupBox（核心参数直露 + 高级折叠），
-步骤选择 RadioButton + 运行按钮，复用 BaseWorkerPanel 的执行栏。
+侧边栏独立工具。三个 Tab（① 构建截面 / ② 重采样光顺 / ③ 生成曲面），
+每个 Tab 内有独立参数区 + 独立执行栏（运行按钮 + 进度条 + 日志），
+结构参照叶片形状输出（shape_design_panel）的多 stage 模式。
 
 运行时检测 CATIA: 点运行先 try 连接，失败弹窗引导，不进入 Worker。
 """
 import os
+import sys
+import subprocess
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFrame,
     QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QRadioButton, QButtonGroup, QFileDialog, QMessageBox,
-    QScrollArea,
+    QCheckBox, QFileDialog, QMessageBox,
+    QScrollArea, QTabWidget, QProgressBar, QTextEdit, QSizePolicy,
 )
 
-from tools.base_module_panel import BaseWorkerPanel
+from tools.base_module_panel import BaseModulePanel
 from catia_modeling import (
     SectionParams, ResampleParams, LoftParams,
     load_params, save_params, CatiaModelError,
@@ -24,69 +28,73 @@ from catia_modeling import (
 from catia_modeling.worker import CatiaModelingWorker
 
 
-class CatiaModelingPanel(BaseWorkerPanel):
+# 三个步骤的元信息：(step_key, tab 标题, tab 副标题, 运行按钮文字)
+_STEPS = (
+    ('sections', '① 构建截面', '点云 → 样条 + 光顺 + 平面 + 前尾缘 + 弦线', '▶  运行 ① 构建截面'),
+    ('resample', '② 重采样光顺', '样条 → 等距重采样 + 光顺', '▶  运行 ② 重采样光顺'),
+    ('loft', '③ 生成曲面', '多截面曲线 → 多截面曲面 Loft', '▶  运行 ③ 生成曲面'),
+)
+
+
+class CatiaModelingPanel(BaseModulePanel):
     MODULE_ID = 'catia_modeling'
     DEFAULT_INPUT_SUBDIR = 'catia_modeling/input'
     DEFAULT_OUTPUT_SUBDIR = 'catia_modeling/output'
     MODULE_TITLE = 'CATIA 叶片建模'
     MODULE_SUBTITLE = 'C A T I A   B L A D E   M O D E L I N G'
-    RUN_BUTTON_TEXT = '▶  运行当前步'
+
+    # 各步骤执行栏的固定高度（与基类 exec_bar 视觉一致）
     EXEC_BAR_HEIGHT = 160
 
     def __init__(self):
-        self._param_widgets = {}  # key -> widget，运行时读值
-        self._step_radios = {}
+        self._param_widgets = {}        # key -> widget，运行时读值
+        self._step_meta = {}            # step_key -> (run_btn, progress, log_area)
+        self._workers = {'sections': None, 'resample': None, 'loft': None}
         super().__init__()
-        self._load_params_to_ui()   # 回填持久化参数
-        self._wire_signals()
+        self._load_params_to_ui()       # 回填持久化参数
 
-    # BaseWorkerPanel 要求实现
-    def _build_main_content(self):
-        """主体: 输入区 + 三个步骤 GroupBox + 步骤选择运行区，外层用滚动区包裹。"""
-        content = QWidget()
-        cl = QVBoxLayout(content)
-        cl.setContentsMargins(16, 12, 16, 12)
-        cl.setSpacing(12)
+    # ============================================================
+    # 主体构建：输入区 + 三 Tab（每 Tab 参数区 + 独立执行栏）
+    # ============================================================
+    def _build_body(self, outer_layout):
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(16, 12, 16, 12)
+        bl.setSpacing(12)
 
-        cl.addWidget(self._build_input_area())
-        cl.addWidget(self._build_section_group())    # ①
-        cl.addWidget(self._build_resample_group())   # ②
-        cl.addWidget(self._build_loft_group())       # ③
-        cl.addWidget(self._build_run_area())
-        cl.addStretch()
+        # 顶部输入区（三步骤共用，放 tab 之外）
+        bl.addWidget(self._build_input_area())
 
-        # 滚动区包裹（参数多，小屏可滚）
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        wrap = QWidget()
-        wl = QVBoxLayout(wrap)
-        wl.setContentsMargins(0, 0, 0, 0)
-        wl.addWidget(scroll)
-        return wrap
+        # 三 Tab
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_sections_tab(), '  ① 构建截面  ')
+        self.tabs.addTab(self._build_resample_tab(), '  ② 重采样光顺  ')
+        self.tabs.addTab(self._build_loft_tab(), '  ③ 生成曲面  ')
+        bl.addWidget(self.tabs, 1)
+
+        outer_layout.addWidget(body, 1)
 
     # ------------------------------------------------------------
-    # 输入区 + 步骤选择运行区
+    # 输入区（STP 路径，三步骤共用）
     # ------------------------------------------------------------
     def _build_input_area(self):
         """STP 文件选择区（仅提示/记录，不传给 CATIA）。"""
         box = QGroupBox('输入文件')
-        bl = QGridLayout(box)
-        bl.setContentsMargins(10, 8, 10, 8)
-        bl.addWidget(QLabel('STP 点云:'), 0, 0)
+        gl = QGridLayout(box)
+        gl.setContentsMargins(10, 8, 10, 8)
+        gl.addWidget(QLabel('STP 点云:'), 0, 0)
         self._stp_edit = QLineEdit()
         self._stp_edit.setPlaceholderText(
             '默认指向叶片形状输出 STAGE-3 的 3D_points.stp')
-        bl.addWidget(self._stp_edit, 0, 1)
+        gl.addWidget(self._stp_edit, 0, 1)
         browse = QPushButton('…')
         browse.setFixedWidth(36)
         browse.clicked.connect(self._on_browse_stp)
-        bl.addWidget(browse, 0, 2)
+        gl.addWidget(browse, 0, 2)
         tip = QLabel('提示: 请先在 CATIA 中手动导入此 STP，'
                      '点云需带 Sect{组}_{点} 命名')
         tip.setStyleSheet('color: #6b7280; font-size: 11px;')
-        bl.addWidget(tip, 1, 0, 1, 3)
+        gl.addWidget(tip, 1, 0, 1, 3)
         return box
 
     def _on_browse_stp(self):
@@ -95,28 +103,9 @@ class CatiaModelingPanel(BaseWorkerPanel):
         if path:
             self._stp_edit.setText(path)
 
-    def _build_run_area(self):
-        """步骤选择 RadioButton + 运行按钮（运行按钮来自基类 exec_bar）。"""
-        box = QGroupBox('运行')
-        bl = QHBoxLayout(box)
-        bl.setContentsMargins(10, 8, 10, 8)
-        bl.addWidget(QLabel('运行步骤:'))
-        self._step_group = QButtonGroup(self)
-        for key, label in [('sections', '① 构建截面'),
-                           ('resample', '② 重采样光顺'),
-                           ('loft', '③ 生成曲面')]:
-            rb = QRadioButton(label)
-            self._step_radios[key] = rb
-            self._step_group.addButton(rb)
-            bl.addWidget(rb)
-        self._step_radios['sections'].setChecked(True)
-        bl.addStretch()
-        # 运行按钮由基类 _build_exec_bar 创建为 self.run_btn，这里连信号
-        return box
-
-    # ------------------------------------------------------------
-    # 控件构建辅助
-    # ------------------------------------------------------------
+    # ============================================================
+    # 控件构建辅助（与原单页面版一致）
+    # ============================================================
     def _spin(self, key, lo, hi, default, is_double=False):
         """创建并登记一个 SpinBox。"""
         if is_double:
@@ -159,11 +148,15 @@ class CatiaModelingPanel(BaseWorkerPanel):
         group_layout.addWidget(cb)
         group_layout.addWidget(advanced_frame)
 
-    # ---- ① 构建截面 ----
-    def _build_section_group(self):
-        box = QGroupBox('① 构建截面  （点云 → 样条 + 光顺 + 平面 + 前尾缘 + 弦线）')
-        gl = QVBoxLayout(box)
-        gl.setContentsMargins(10, 8, 10, 8)
+    # ============================================================
+    # 各步骤参数区构建（内容不变，仅去掉 GroupBox 外壳改成 tab 内区）
+    # ============================================================
+    def _build_sections_params(self):
+        """① 构建截面参数区。"""
+        wrap = QWidget()
+        gl = QVBoxLayout(wrap)
+        gl.setContentsMargins(0, 6, 0, 6)
+        gl.setSpacing(6)
         # 核心
         gl.addWidget(self._row('截面数', self._spin('sec.num_groups', 1, 9999, 96)))
         gl.addWidget(self._row('起始组号', self._spin('sec.start_group', 1, 9999, 1)))
@@ -189,13 +182,14 @@ class CatiaModelingPanel(BaseWorkerPanel):
         al.addWidget(self._row('边缘集', self._line('sec.edge_set', 'Z_Edges')))
         al.addWidget(self._row('尾缘集', self._line('sec.te_set', 'Z_TrailingEdges')))
         self._advanced_toggle(gl, adv, 'sections')
-        return box
+        return wrap
 
-    # ---- ② 重采样光顺 ----
-    def _build_resample_group(self):
-        box = QGroupBox('② 重采样光顺  （样条 → 等距重采样 + 光顺）')
-        gl = QVBoxLayout(box)
-        gl.setContentsMargins(10, 8, 10, 8)
+    def _build_resample_params(self):
+        """② 重采样光顺参数区。"""
+        wrap = QWidget()
+        gl = QVBoxLayout(wrap)
+        gl.setContentsMargins(0, 6, 0, 6)
+        gl.setSpacing(6)
         gl.addWidget(self._row('源样条集', self._line('res.source_set', 'Z_Smooths')))
         gl.addWidget(self._row('重采样点数', self._spin('res.num_points', 2, 99999, 149)))
         gl.addWidget(self._row('光顺偏差阈值', self._spin('res.smooth_max_deviation', 0, 9999, 1.0, is_double=True)))
@@ -209,13 +203,14 @@ class CatiaModelingPanel(BaseWorkerPanel):
         al.addWidget(self._row('原始样条集', self._line('res.original_set', 'Z_OriginalSpline')))
         al.addWidget(self._row('光顺集', self._line('res.smooth_set', 'Z_ResampleSmooth')))
         self._advanced_toggle(gl, adv, 'resample')
-        return box
+        return wrap
 
-    # ---- ③ 生成曲面 ----
-    def _build_loft_group(self):
-        box = QGroupBox('③ 生成曲面  （多截面曲线 → 多截面曲面 Loft）')
-        gl = QVBoxLayout(box)
-        gl.setContentsMargins(10, 8, 10, 8)
+    def _build_loft_params(self):
+        """③ 生成曲面参数区。"""
+        wrap = QWidget()
+        gl = QVBoxLayout(wrap)
+        gl.setContentsMargins(0, 6, 0, 6)
+        gl.setSpacing(6)
         gl.addWidget(self._row('源曲线集', self._line('loft.source_set', 'Z_ResampleSmooth')))
         gl.addWidget(self._row('截面耦合方式', self._spin('loft.section_coupling', 0, 2, 1)))
         adv = QWidget()
@@ -225,18 +220,133 @@ class CatiaModelingPanel(BaseWorkerPanel):
         al.addWidget(self._row('重新限定', self._spin('loft.relimitation', 0, 1, 1)))
         al.addWidget(self._row('规范检测', self._spin('loft.canonical_detection', 0, 2, 2)))
         self._advanced_toggle(gl, adv, 'loft')
-        return box
+        return wrap
 
-    # ------------------------------------------------------------
-    # 信号连接
-    # ------------------------------------------------------------
-    def _wire_signals(self):
-        self.run_btn.clicked.connect(self._on_run)
-        self._worker = None
+    # ============================================================
+    # 各 Tab 构建：参数区（滚动） + 独立执行栏
+    # ============================================================
+    def _build_sections_tab(self):
+        return self._build_step_tab('sections', '① 构建截面',
+                                     '点云 → 样条 + 光顺 + 平面 + 前尾缘 + 弦线',
+                                     '▶  运行 ① 构建截面',
+                                     self._build_sections_params())
 
-    # ------------------------------------------------------------
+    def _build_resample_tab(self):
+        return self._build_step_tab('resample', '② 重采样光顺',
+                                     '样条 → 等距重采样 + 光顺',
+                                     '▶  运行 ② 重采样光顺',
+                                     self._build_resample_params())
+
+    def _build_loft_tab(self):
+        return self._build_step_tab('loft', '③ 生成曲面',
+                                     '多截面曲线 → 多截面曲面 Loft',
+                                     '▶  运行 ③ 生成曲面',
+                                     self._build_loft_params())
+
+    def _build_step_tab(self, step_key, title, subtitle, run_text, params_widget):
+        """通用单 Tab 构建：标题 + 参数区（滚动） + 独立执行栏。
+
+        执行栏控件挂到 self._step_meta[step_key] = (run_btn, progress, log_area)。
+        """
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(12, 10, 12, 8)
+        v.setSpacing(8)
+
+        # 标题 + 副标题
+        v.addWidget(self._build_step_header(title, subtitle))
+
+        # 参数区（可滚动）
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(params_widget)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        v.addWidget(scroll, 1)
+
+        # 独立执行栏
+        v.addWidget(self._build_step_exec_bar(step_key, run_text))
+        return page
+
+    def _build_step_header(self, title, subtitle):
+        """Tab 内顶部标题区。"""
+        wrap = QWidget()
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(2)
+        t = QLabel(title)
+        f = QFont('YouSheBiaoTiHei', 13)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 2)
+        t.setFont(f)
+        t.setStyleSheet('color: #1e3a5f;')
+        s = QLabel(subtitle)
+        s.setStyleSheet('color: #6b7280; font-size: 11px;')
+        wl.addWidget(t)
+        wl.addWidget(s)
+        return wrap
+
+    def _build_step_exec_bar(self, step_key, run_text):
+        """单步骤执行栏：运行按钮 + 打开目录 + 进度条 + 日志。
+
+        结构对照 BaseWorkerPanel._build_exec_bar，但每个步骤独立一份。
+        """
+        wrap = QWidget()
+        wrap.setObjectName('execBar')
+        wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        wrap.setMinimumHeight(self.EXEC_BAR_HEIGHT)
+
+        bar = QHBoxLayout(wrap)
+        bar.setContentsMargins(2, 8, 2, 2)
+        bar.setSpacing(10)
+
+        # 左侧：运行按钮 + 打开目录 + 进度条
+        left_wrap = QWidget()
+        left_wrap.setFixedWidth(320)
+        left_layout = QVBoxLayout(left_wrap)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        run_btn = QPushButton(run_text)
+        run_btn.setMinimumHeight(40)
+        run_btn.setObjectName('primaryBtn')
+        run_btn.setCursor(Qt.PointingHandCursor)
+        run_btn.clicked.connect(lambda _, k=step_key: self._on_run(k))
+
+        open_btn = QPushButton('📂  打开输出目录')
+        open_btn.setObjectName('secondaryBtn')
+        open_btn.setMinimumHeight(36)
+        open_btn.setCursor(Qt.PointingHandCursor)
+        open_btn.clicked.connect(self._on_open_output)
+
+        progress = QProgressBar()
+        progress.setValue(0)
+        progress.setTextVisible(True)
+
+        left_layout.addWidget(run_btn)
+        left_layout.addWidget(open_btn)
+        left_layout.addWidget(progress)
+        left_layout.addStretch()
+
+        # 右侧：日志区
+        right_wrap = QWidget()
+        right_layout = QVBoxLayout(right_wrap)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(QLabel('日志:'))
+        log_area = QTextEdit()
+        log_area.setReadOnly(True)
+        log_area.setObjectName('logArea')
+        right_layout.addWidget(log_area, 1)
+
+        bar.addWidget(left_wrap, 0)
+        bar.addWidget(right_wrap, 1)
+
+        # 挂引用，供运行时按步骤定位
+        self._step_meta[step_key] = (run_btn, progress, log_area)
+        return wrap
+
+    # ============================================================
     # 参数读写（UI 控件 ↔ params_store）
-    # ------------------------------------------------------------
+    # ============================================================
     def _collect_ui_params(self):
         """从所有控件读值，组装成 params_store 格式的 dict。"""
         return {
@@ -325,15 +435,9 @@ class CatiaModelingPanel(BaseWorkerPanel):
         w['_advanced_resample'].setChecked(adv.get('advanced_expanded_resample', False))
         w['_advanced_loft'].setChecked(adv.get('advanced_expanded_loft', False))
 
-    # ------------------------------------------------------------
-    # 运行编排
-    # ------------------------------------------------------------
-    def _current_step(self):
-        for key, rb in self._step_radios.items():
-            if rb.isChecked():
-                return key
-        return 'sections'
-
+    # ============================================================
+    # 运行编排（按 step_key 区分，每步独立 Worker + 日志）
+    # ============================================================
     def _build_step_params(self, step):
         p = self._collect_ui_params()
         if step == 'sections':
@@ -379,13 +483,14 @@ class CatiaModelingPanel(BaseWorkerPanel):
                 '请先启动 CATIA 并打开零件文档（.CATPart），\n再点击运行。')
             return False
 
-    def _on_run(self):
-        if self._worker is not None and self._worker.isRunning():
-            QMessageBox.information(self, '运行中', '上一步仍在运行，请等待完成。')
+    def _on_run(self, step):
+        """运行指定步骤。step 由各 tab 的运行按钮传入。"""
+        run_btn, progress, log_area = self._step_meta[step]
+        if self._workers[step] is not None and self._workers[step].isRunning():
+            QMessageBox.information(self, '运行中', '该步骤仍在运行，请等待完成。')
             return
         if not self._check_catia_available():
             return
-        step = self._current_step()
         try:
             params = self._build_step_params(step)
             params.validate()
@@ -395,26 +500,64 @@ class CatiaModelingPanel(BaseWorkerPanel):
         # 存盘（记住上次值）
         save_params(self._collect_ui_params())
         # 清日志、启动 Worker
-        self.log_area.clear()
-        self.progress.setValue(0)
-        step_label = {'sections': '① 构建截面',
-                      'resample': '② 重采样光顺',
-                      'loft': '③ 生成曲面'}[step]
-        self._on_log(f'▶ 开始: {step_label}')
-        self._worker = CatiaModelingWorker(step, params)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.log_msg.connect(self._on_log)
-        self._worker.finished_ok.connect(self._on_finished_ok)
-        self._worker.finished_err.connect(self._on_finished_err)
-        self.run_btn.setEnabled(False)
-        self._worker.start()
+        log_area.clear()
+        progress.setValue(0)
+        step_label = dict((k, t) for k, t, _s, _r in _STEPS)[step]
+        log_area.append(f'▶ 开始: {step_label}')
+        worker = CatiaModelingWorker(step, params)
+        self._workers[step] = worker
+        # 信号连到本步骤的进度/日志/完成槽（用 lambda 绑定 step 与对应控件）
+        worker.progress.connect(
+            lambda pct, msg, p=progress, la=log_area: self._on_step_progress(pct, msg, p, la))
+        worker.log_msg.connect(
+            lambda msg, la=log_area: self._on_step_log(msg, la))
+        worker.finished_ok.connect(
+            lambda summary, k=step, rb=run_btn: self._on_step_finished_ok(summary, k, rb))
+        worker.finished_err.connect(
+            lambda err, k=step, rb=run_btn: self._on_step_finished_err(err, k, rb))
+        run_btn.setEnabled(False)
+        worker.start()
 
-    def _on_finished_ok(self, summary):
-        self.run_btn.setEnabled(True)
-        self._on_log(f'✓ {summary}')
+    def _on_step_progress(self, pct, msg, progress, log_area):
+        """单步骤进度槽：更新该步骤进度条 + 追加日志。"""
+        progress.setValue(int(pct))
+        if msg:
+            log_area.append(msg)
+            log_area.verticalScrollBar().setValue(
+                log_area.verticalScrollBar().maximum())
+
+    def _on_step_log(self, msg, log_area):
+        """单步骤纯日志槽。"""
+        log_area.append(msg)
+        log_area.verticalScrollBar().setValue(
+            log_area.verticalScrollBar().maximum())
+
+    def _on_step_finished_ok(self, summary, step, run_btn):
+        run_btn.setEnabled(True)
+        _run_btn, progress, log_area = self._step_meta[step]
+        log_area.append(f'✓ {summary}')
+        log_area.verticalScrollBar().setValue(
+            log_area.verticalScrollBar().maximum())
         QMessageBox.information(self, '完成', summary)
 
-    def _on_finished_err(self, err):
-        self.run_btn.setEnabled(True)
-        self._on_log(f'✗ {err}')
+    def _on_step_finished_err(self, err, step, run_btn):
+        run_btn.setEnabled(True)
+        _run_btn, progress, log_area = self._step_meta[step]
+        log_area.append(f'✗ {err}')
+        log_area.verticalScrollBar().setValue(
+            log_area.verticalScrollBar().maximum())
         QMessageBox.critical(self, '失败', err)
+
+    # 打开输出目录（基类 BaseModulePanel 提供 out_dir；这里实现，三个 tab 共用）
+    def _on_open_output(self):
+        if not self.out_dir:
+            return
+        try:
+            if os.name == 'nt':
+                os.startfile(self.out_dir)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', self.out_dir])
+            else:
+                subprocess.Popen(['xdg-open', self.out_dir])
+        except OSError as e:
+            QMessageBox.warning(self, '打开失败', str(e))
