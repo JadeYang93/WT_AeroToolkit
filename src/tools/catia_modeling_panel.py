@@ -265,16 +265,17 @@ class CatiaModelingPanel(BaseModulePanel):
     def _build_two_column_params(self, core_rows, adv_rows):
         """核心参数（左，深蓝左边条） + 高级参数（右，浅灰左边条）并排两栏。
 
-        两栏均为白卡片 GroupBox，复用全局 QSS；布局按 HTML demo 风格
-        充分利用水平空间，始终并排显示。
+        两栏均为白卡片 GroupBox，复用全局 QSS。两栏内容**顶部对齐**
+        （AlignTop），核心/高级栏高度不同时核心栏不居中、不被拉到中间。
         """
         wrap = QWidget()
         wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 6, 0, 6)
         h.setSpacing(18)
-        h.addWidget(self._column('核心参数', core_rows, primary=True), 1)
-        h.addWidget(self._column('高级参数', adv_rows, primary=False), 1)
+        h.setAlignment(Qt.AlignTop)  # 两栏整体顶部对齐，不垂直居中
+        h.addWidget(self._column('核心参数', core_rows, primary=True), 0, Qt.AlignTop)
+        h.addWidget(self._column('高级参数', adv_rows, primary=False), 0, Qt.AlignTop)
         return wrap
 
     def _build_sections_params(self):
