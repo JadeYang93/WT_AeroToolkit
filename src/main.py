@@ -32,6 +32,7 @@ from tools.focus6_solver_panel import Focus6SolverPanel
 from tools.load_estimation_panel import LoadEstimationPanel
 from tools.curve_fitter_panel import CurveFitterPanel
 from tools.prebend_design_panel import PrebendDesignPanel
+from tools.catia_modeling_panel import CatiaModelingPanel
 from path_migration import migrate_legacy_paths, migrate_extras_between_modules
 from settings_dialog import SettingsDialog
 from help_viewer import HelpDialog
@@ -47,6 +48,7 @@ TOOLS = [
     ('📊  载荷预估', LoadEstimationPanel),
     ('📈  曲线拟合', CurveFitterPanel),
     ('📐  预弯设计', PrebendDesignPanel),
+    ('🛠  CATIA 叶片建模', CatiaModelingPanel),
 ]
 
 
