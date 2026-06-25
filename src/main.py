@@ -571,28 +571,37 @@ class MainWindow(QMainWindow):
         help_menu = mb.addMenu('帮助(&H)')
 
         # 每个模块一条帮助项，key 取 panel_cls.MODULE_ID
+        # CATIA(3D 造型) 模块额外带「分步说明」二级子菜单
         for display_name, panel_cls in TOOLS:
             module_id = getattr(panel_cls, 'MODULE_ID', None)
             if not module_id:
                 continue
-            act = help_menu.addAction(f'{display_name} 帮助')
-            act.triggered.connect(
-                lambda _=False, mid=module_id, dn=display_name:
-                    self._show_help(mid, f'{dn} — 帮助')
-            )
-
-        # 3D 造型 三个步骤的详细说明（子菜单）
-        catia_menu = help_menu.addMenu('3D 造型 — 分步说明')
-        for stage_key, stage_title in (
-            ('catia_modeling_stage1', '步骤① 构建截面'),
-            ('catia_modeling_stage2', '步骤② 重采样光顺'),
-            ('catia_modeling_stage3', '步骤③ 生成曲面'),
-        ):
-            act_stage = catia_menu.addAction(stage_title)
-            act_stage.triggered.connect(
-                lambda _=False, k=stage_key, t=stage_title:
-                    self._show_help(k, f'3D 造型 · {t} — 说明')
-            )
+            if module_id == 'catia_modeling':
+                # 顶层「3D 造型 帮助」(打开总览) + 二级「分步说明」子菜单
+                top_menu = help_menu.addMenu(f'{display_name} 帮助')
+                act_overview = top_menu.addAction('模块总览')
+                act_overview.triggered.connect(
+                    lambda _=False, mid=module_id, dn=display_name:
+                        self._show_help(mid, f'{dn} — 帮助')
+                )
+                top_menu.addSeparator()
+                stages_menu = top_menu.addMenu('分步说明')
+                for stage_key, stage_title in (
+                    ('catia_modeling_stage1', '步骤① 构建截面'),
+                    ('catia_modeling_stage2', '步骤② 重采样光顺'),
+                    ('catia_modeling_stage3', '步骤③ 生成曲面'),
+                ):
+                    act_stage = stages_menu.addAction(stage_title)
+                    act_stage.triggered.connect(
+                        lambda _=False, k=stage_key, t=stage_title:
+                            self._show_help(k, f'3D 造型 · {t} — 说明')
+                    )
+            else:
+                act = help_menu.addAction(f'{display_name} 帮助')
+                act.triggered.connect(
+                    lambda _=False, mid=module_id, dn=display_name:
+                        self._show_help(mid, f'{dn} — 帮助')
+                )
 
         help_menu.addSeparator()
 
