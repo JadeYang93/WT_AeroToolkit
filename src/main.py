@@ -26,9 +26,13 @@ from PyQt5.QtWidgets import (
 from config import APP_VERSION, PROJECT_ROOT
 from tools.wind_farm_panel import WindFarmStatsPanel
 from tools.wind_farm_compare_panel import WindFarmComparePanel
-from tools.shape_output_panel import ShapeOutputPanel
+from tools.shape_design_panel import ShapeDesignPanel
 from tools.blade_converter_panel import BladeConverterPanel
-from path_migration import migrate_legacy_paths
+from tools.focus6_solver_panel import Focus6SolverPanel
+from tools.load_estimation_panel import LoadEstimationPanel
+from tools.curve_fitter_panel import CurveFitterPanel
+from tools.prebend_design_panel import PrebendDesignPanel
+from path_migration import migrate_legacy_paths, migrate_extras_between_modules
 from settings_dialog import SettingsDialog
 from help_viewer import HelpDialog
 
@@ -37,8 +41,12 @@ from help_viewer import HelpDialog
 TOOLS = [
     ('🌬  风场数据统计', WindFarmStatsPanel),
     ('⚖  风场对比', WindFarmComparePanel),
-    ('✈  叶片形状输出', ShapeOutputPanel),
+    ('✈  叶片形状输出', ShapeDesignPanel),
     ('🔧  叶片结构套件', BladeConverterPanel),
+    ('🎯  FOCUS6', Focus6SolverPanel),
+    ('📊  载荷预估', LoadEstimationPanel),
+    ('📈  曲线拟合', CurveFitterPanel),
+    ('📐  预弯设计', PrebendDesignPanel),
 ]
 
 
@@ -412,18 +420,28 @@ QCheckBox {
     spacing: 6px;
 }
 QCheckBox::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid #94a3b8;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #94a3b8;
     border-radius: 3px;
     background-color: #ffffff;
 }
 QCheckBox::indicator:hover {
-    border-color: #0ea5e9;
+    border: 1.5px solid #0ea5e9;
+    background-color: #f0f9ff;
 }
 QCheckBox::indicator:checked {
     background-color: #0ea5e9;
-    border-color: #0ea5e9;
+    border: 1.5px solid #0284c7;
+    image: url('__CHECK_SVG__/check.svg');
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #0284c7;
+    border: 1.5px solid #0369a1;
+}
+QCheckBox::indicator:disabled {
+    background-color: #e5e7eb;
+    border-color: #cbd5e1;
 }
 
 /* ===== 提示/状态标签 ===== */
@@ -607,17 +625,25 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # 应用图标：窗口标题栏 + 任务栏（src/_assets/icon.png）
+    # 应用图标：窗口标题栏 + 任务栏。
+    # Windows 任务栏对 PNG 图标支持不完整（标题栏能显示但任务栏常回退到 Python 默认图标），
+    # 必须提供多尺寸 .ico（16/24/32/48/64/128/256）让 Windows 按场景挑合适尺寸。
+    # QIcon 直接加载 .ico 时 Qt 会自动按目标尺寸挑最合适的 layer。
     src_dir = os.path.dirname(os.path.abspath(__file__))
-    icon_path = os.path.join(src_dir, '_assets', 'icon.png')
-    app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
-    app.setWindowIcon(app_icon)
-
-    # 启动 splash：显示图标 + 等待字体加载/迁移完成。原图 1254 太大，缩到 480 居中显示
-    splash = None
+    ico_path = os.path.join(src_dir, '_assets', 'icon.ico')
+    png_path = os.path.join(src_dir, '_assets', 'icon.png')
+    icon_path = ico_path if os.path.exists(ico_path) else png_path
     if os.path.exists(icon_path):
-        splash_pix = QPixmap(icon_path).scaled(
-            480, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        app.setWindowIcon(QIcon(icon_path))
+    else:
+        app.setWindowIcon(QIcon())
+
+    # 启动 splash：显示图标 + 等待字体加载/迁移完成。
+    # splash 用 PNG 原图缩放到一半（约 627×627）—— 清晰度足够，又不会占满屏幕
+    splash = None
+    if os.path.exists(png_path):
+        splash_pix = QPixmap(png_path).scaled(
+            627, 627, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         splash = QSplashScreen(splash_pix)
         splash.show()
         app.processEvents()   # 让 splash 立即渲染出来，否则白屏
@@ -631,13 +657,19 @@ def main():
 
     assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_assets')
     assets_dir = assets_dir.replace('\\', '/')   # QSS url 用正斜杠
-    app.setStyleSheet(APP_STYLE.replace('{assets_dir}', assets_dir))
+    resources_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources')
+    resources_dir = resources_dir.replace('\\', '/')
+    style = APP_STYLE.replace('{assets_dir}', assets_dir).replace('__CHECK_SVG__', resources_dir)
+    app.setStyleSheet(style)
 
     # 首启迁移：把旧散落在 输入数据/ 顶层的文件移到 输入数据/{module}/ 子目录
     # 必须在 MainWindow 实例化前跑（panel 构造时会 register_module 写 .paths.json）
     modules = [(cls.MODULE_ID, cls.DEFAULT_INPUT_SUBDIR, cls.DEFAULT_OUTPUT_SUBDIR)
                for _, cls in TOOLS]
     migrate_legacy_paths(modules)
+    # 跨模块 extras 迁移：v0.3.0 把 modules_path 从 blade_converter 迁到 focus6_solver
+    # 仅当目标模块 extras 为空且源有值时复制（一次性，不删源）
+    migrate_extras_between_modules('blade_converter', 'focus6_solver', 'modules_path')
 
     win = MainWindow()
     win.show()

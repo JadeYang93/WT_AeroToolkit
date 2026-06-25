@@ -43,6 +43,46 @@ def _maybe_open_folder(output_path, logger):
     _emit(logger, f"\n已打开输出文件夹: {output_folder}")
 
 
+def _format_mac_number(value, plus_sign=False):
+    """把 Excel 单元格值格式化成 mac 文件里的数字字符串。
+
+    关键：保留原始前导正号（``+0`` / ``+100`` 等 FOCUS6 mac 格式）。
+
+    - 字符串：原样返回（已含 ``+`` / ``-`` 号，或非数字文本）
+    - int / float：按原规则格式化（整数不带小数点，浮点用 ``str(f)`` 保留
+                  round-trip 精度，科学计数大写 E）
+    - NaN / None：返回空串（实际上层已 ``continue`` 跳过）
+
+    Args:
+        plus_sign: True=数值 >= 0 时前置 ``+``。用于恢复 mac 里 line 名称格式
+                  （如 ``+0`` / ``+100``，这些字符串在 Excel 里被识别为数值存储，
+                   转回 mac 时需恢复前导 +）。仅对 Line1/Line2 等 line 名字段启用。
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if value is None:
+        return ''
+    try:
+        f = float(value)
+        if pd.isna(f):
+            return ''
+        # Python 3 str(float) 用最短 round-trip 表示，避免 :g 默认 6 位有效数字截断精度
+        if plus_sign and f >= 0:
+            # mac line 名格式：非负数前置 +（恢复被 Excel 数值化的 +0 / +100 等）
+            if f == int(f):
+                return f"+{int(f)}"
+            s = f"+{f}"
+        else:
+            if f == int(f):
+                return str(int(f))
+            s = str(f)
+        if 'e' in s:
+            s = s.upper().replace('e', 'E')
+        return s
+    except (ValueError, TypeError):
+        return str(value).strip()
+
+
 def convert_txt_to_excel(input_file, output_file, logger=None, open_output_folder=False):
     """blade_geometry.mac → Excel 转换。
 
@@ -102,8 +142,9 @@ def convert_txt_to_excel(input_file, output_file, logger=None, open_output_folde
 
             elif s.startswith("POINTS") and current_shape is not None:
                 parts = re.split(r"\s+", s)
-                x = float(parts[1])
-                y = float(parts[2])
+                # 保留原始字符串（含前导 + 号），Excel→mac 回写时能保留 FOCUS6 mac 格式
+                x = parts[1]
+                y = parts[2]
                 shape_point_groups[current_shape].append((x, y))
 
             elif s.startswith("END SHAPE"):
@@ -342,27 +383,14 @@ def convert_txt_to_excel(input_file, output_file, logger=None, open_output_folde
                 current_sec['Line2'] = parts[2]
 
             elif s.startswith('point') and len(re.split(r'\s+', s)) != 6:
-                parts = re.split(r'\s+', s)
-
-                if len(parts) >= 3:
-                    section_point['pointX'] = parts[1]
-                    section_point['layer'] = parts[2]
-                elif len(parts) == 2:
-                    compact_value = parts[1]
-                    split_pos = -1
-                    for i in range(1, len(compact_value)):
-                        candidate_pos = compact_value[:i]
-                        candidate_layer = compact_value[i:]
-                        if re.match(r'^\d+$', candidate_pos):
-                            if re.match(r'^\d+\.?\d*[Ee][+-]?\d+$', candidate_layer):
-                                split_pos = i
-
-                    if split_pos > 0:
-                        section_point['pointX'] = compact_value[:split_pos]
-                        section_point['layer'] = compact_value[split_pos:]
-                    else:
-                        section_point['pointX'] = compact_value
-                        section_point['layer'] = ''
+                # 严格按 14+10 字符宽度切：point 后 14 字符 = pointX，再 10 字符 = layer
+                # mac 原格式：' point' + 14字符pointX + 10字符layer
+                # s 已 strip（去行首空格），从位置 5 开始切
+                pointX_field = s[5:19]
+                layer_field = s[19:29]
+                section_point['pointX'] = pointX_field.strip()
+                layer_strip = layer_field.strip()
+                section_point['layer'] = layer_strip if layer_strip else ''
 
                 current_section_points.append(section_point.copy())
                 section_point = {}
@@ -506,30 +534,8 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                     if pd.isna(x):
                         continue
 
-                    x_val = x
-                    y_val = y
-
-                    try:
-                        x_float = float(x)
-                        if x_float == int(x_float):
-                            x_val = str(int(x_float))
-                        else:
-                            x_val = f"{x_float:g}"
-                            if 'e' in x_val:
-                                x_val = x_val.upper().replace('e', 'E')
-                    except (ValueError, TypeError):
-                        x_val = str(x)
-
-                    try:
-                        y_float = float(y)
-                        if y_float == int(y_float):
-                            y_val = str(int(y_float))
-                        else:
-                            y_val = f"{y_float:g}"
-                            if 'e' in y_val:
-                                y_val = y_val.upper().replace('e', 'E')
-                    except (ValueError, TypeError):
-                        y_val = str(y)
+                    x_val = _format_mac_number(x)
+                    y_val = _format_mac_number(y)
 
                     f.write(f" POINTS             {x_val:<10}{y_val:<10}\n")
 
@@ -720,7 +726,7 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                         f.write(f"DEF SECTION {name:<8}{base_type:<51}{section_num}\n")
 
                     if base_type != 'MASS':
-                        f.write(f" lines              {row['Line1']:<10}{row['Line2']}\n")
+                        f.write(f" lines              {_format_mac_number(row['Line1'], plus_sign=True):<10}{_format_mac_number(row['Line2'], plus_sign=True)}\n")
                     i += 1
 
                     while i < len(df_section) and pd.isna(df_section.iloc[i, 0]) and pd.isna(df_section.iloc[i, 1]):
@@ -732,14 +738,15 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                                 if layer_val_float == int(layer_val_float):
                                     layer_str = str(int(layer_val_float))
                                 else:
-                                    layer_str = f"{layer_val_float:g}"
+                                    layer_str = str(layer_val_float)
                                     if 'e' in layer_str:
                                         layer_str = layer_str.upper().replace('e', 'E')
                             except (ValueError, TypeError):
                                 layer_str = str(layer_val)
                         else:
-                            layer_str = str(layer_val)
+                            layer_str = ''
                         pointx_str = normalize_number_str(r2['pointX'])
+                        # 严格按 14+10 字符宽度写（与 mac 原格式一致）
                         f.write(f" point{format_field(pointx_str, 14)}{format_field(layer_str, 10)}\n")
                         i += 1
                     f.write("END DEF SECTION\n")
@@ -774,7 +781,7 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                         f.write(f"DEF SECTION {name:<8}{base_type:<51}{section_num}\n")
 
                     if base_type != 'MASS':
-                        f.write(f" lines              {row['Line1']:<10}{row['Line2']}\n")
+                        f.write(f" lines              {_format_mac_number(row['Line1'], plus_sign=True):<10}{_format_mac_number(row['Line2'], plus_sign=True)}\n")
 
                     i += 1
 
@@ -787,14 +794,15 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                                 if layer_val_float == int(layer_val_float):
                                     layer_str = str(int(layer_val_float))
                                 else:
-                                    layer_str = f"{layer_val_float:g}"
+                                    layer_str = str(layer_val_float)
                                     if 'e' in layer_str:
                                         layer_str = layer_str.upper().replace('e', 'E')
                             except (ValueError, TypeError):
                                 layer_str = str(layer_val)
                         else:
-                            layer_str = str(layer_val)
+                            layer_str = ''
                         pointx_str = normalize_number_str(r2['pointX'])
+                        # 严格按 14+10 字符宽度写（与 mac 原格式一致）
                         f.write(f" point{format_field(pointx_str, 14)}{format_field(layer_str, 10)}\n")
                         i += 1
                     f.write("END DEF SECTION\n")
@@ -829,7 +837,7 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                         f.write(f"DEF SECTION {name:<8}{base_type:<51}{section_num}\n")
 
                     if base_type != 'MASS':
-                        f.write(f" lines              {row['Line1']:<10}{row['Line2']}\n")
+                        f.write(f" lines              {_format_mac_number(row['Line1'], plus_sign=True):<10}{_format_mac_number(row['Line2'], plus_sign=True)}\n")
 
                     i += 1
 
@@ -842,14 +850,15 @@ def convert_excel_to_txt(input_file, output_file, logger=None, open_output_folde
                                 if layer_val_float == int(layer_val_float):
                                     layer_str = str(int(layer_val_float))
                                 else:
-                                    layer_str = f"{layer_val_float:g}"
+                                    layer_str = str(layer_val_float)
                                     if 'e' in layer_str:
                                         layer_str = layer_str.upper().replace('e', 'E')
                             except (ValueError, TypeError):
                                 layer_str = str(layer_val)
                         else:
-                            layer_str = str(layer_val)
+                            layer_str = ''
                         pointx_str = normalize_number_str(r2['pointX'])
+                        # 严格按 14+10 字符宽度写（与 mac 原格式一致）
                         f.write(f" point{format_field(pointx_str, 14)}{format_field(layer_str, 10)}\n")
                         i += 1
                     f.write("END DEF SECTION\n")

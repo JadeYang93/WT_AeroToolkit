@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 """叶片结构套件面板（QWidget 子类）。
 
-4 个 Tab 流水线（沿用 shape_output_panel 的隐藏 tabBar + stepper 模式）：
+3 个 Tab 流水线（沿用 shape_design_panel 的隐藏 tabBar + stepper 模式）：
   - TAB-1：blade_db.xlsx + .mac → focus2blade.xlsx（WISDEM 插值）
   - TAB-2：focus2blade.xlsx → 更新 .prj（字段映射）
   - TAB-3：blade_geometry.mac ↔ blade_data.xlsx 双向转换
-  - TAB-4：FOCUS6 求解器（farob/frbex/应变/叶尖挠度/一键运行）
 
-输入/输出路径走 ConfigCenter；FOCUS6 Modules 目录走 ConfigCenter extras（modules_path），
-内含 farob/ frbex/ utils/ 等子目录，TAB-4 按所选求解器类型自动选用。
-首次使用需先到「⚙ 设置」配置 Modules 目录，否则 TAB-4 会被禁用并提示。
+FOCUS6（farob/frbex/应变/叶尖挠度/一键运行）已迁移到独立的
+`focus6_solver` 模块（参见 tools/focus6_solver_panel.py）。
+输入/输出路径走 ConfigCenter。
 """
 import os
 import sys
@@ -33,18 +32,12 @@ from blade_converter.bc_config import (
     DEFAULT_TXT_INPUT_FILE,
     DEFAULT_EXCEL_INPUT_FILE,
     SOLVER_FAROB, SOLVER_FRBEX,
-    FUNCTION_READ_MAC, FUNCTION_PARSE_MAC, FUNCTION_FREQUENCY,
-    FUNCTION_TIP_DEFLECTION, FUNCTION_STRAIN, FUNCTION_WEIGHT,
-    FUNCTION_LOAD_CONVERSION,
-    FRBEX_DEFAULT_DRMX,
 )
 from blade_converter.conversion import blade_db_to_focus2blade_wisdem
 from blade_converter.prj_processor import PRJFileProcessor
 from blade_converter.txt_excel import (
     convert_txt_to_excel, convert_excel_to_txt,
 )
-from blade_converter.solver_focus6 import Focus6SolverThread
-from blade_converter.solver_one_click import OneClickRunThread
 
 
 # ============================================================
@@ -162,12 +155,12 @@ class ConverterTab3Worker(QThread):
         try:
             logger = lambda m: self._log(50, m)
             if self.direction == 'txt_to_excel':
-                self._log(10, '方向: mac → Excel')
+                self._log(10, '方向: mac → xlsx')
                 ok = convert_txt_to_excel(
                     self.input_file, self.output_file, logger=logger,
                 )
             else:
-                self._log(10, '方向: Excel → mac')
+                self._log(10, '方向: xlsx → mac')
                 ok = convert_excel_to_txt(
                     self.input_file, self.output_file, logger=logger,
                 )
@@ -185,57 +178,8 @@ class ConverterTab3Worker(QThread):
         self.progress.emit(p, m)
 
 
-class ConverterTab4Worker(QThread):
-    """TAB-4：FOCUS6 求解器调用（支持一键运行）。
-
-    内部直接复用原项目的 ``Focus6SolverThread`` / ``OneClickRunThread`` QThread 类，
-    但由于 QThread 不能嵌套 start，这里改成在 run() 里直接调用其方法（同步执行）。
-    """
-    progress = pyqtSignal(int, str)
-
-    def __init__(self, params, one_click=False):
-        super().__init__()
-        self.params = params
-        self.one_click = one_click
-        self.result = None
-
-    def run(self):
-        try:
-            if self.one_click:
-                self._log(10, '一键运行模式（并行 6 步）')
-                runner = OneClickRunThread(self.params, summarize_only=False)
-                # 把 OneClickRunThread 的信号转发到本 Worker 的信号
-                runner.log_signal.connect(lambda m: self._log(50, m))
-                runner.progress_signal.connect(
-                    lambda cur, total: self._log(
-                        10 + int(80 * cur / max(1, total)), f'步骤 {cur}/{total}'
-                    )
-                )
-                # 直接在当前线程里跑（OneClickRunThread.run 是普通函数）
-                runner.run()
-            else:
-                self._log(10, f"单求解器: {self.params.get('function')}")
-                solver = Focus6SolverThread(self.params, skip_prepare=False, generate_csv=True)
-                solver.log_signal.connect(lambda m: self._log(50, m))
-                solver.progress_signal.connect(
-                    lambda cur, total: self._log(
-                        10 + int(80 * cur / max(1, total)), f'步骤 {cur}/{total}'
-                    )
-                )
-                solver.run()
-            self._log(100, '=== TAB-4 完成 ===')
-            self.result = {'output': self.params.get('sum_folder', '')}
-        except Exception:
-            err = traceback.format_exc()
-            self._log(100, f'[错误] {err}')
-            self.result = {'error': err}
-
-    def _log(self, p, m):
-        self.progress.emit(p, m)
-
-
 # ============================================================
-# CompactScrollArea（与 shape_output_panel 同实现）
+# CompactScrollArea（与 shape_design_panel 同实现）
 # ============================================================
 
 class CompactScrollArea(QScrollArea):
@@ -256,14 +200,13 @@ class BladeConverterPanel(QWidget):
     MODULE_ID = 'blade_converter'
     DEFAULT_INPUT_SUBDIR = 'blade_converter'
     DEFAULT_OUTPUT_SUBDIR = 'blade_converter'
-    EXTRA_KEYS = ['modules_path']
 
     _TAB_STEPS = (
         # (tab_key, tab_index, 编号, 简称, 全称)
-        ('tab1', 0, '1', 'blade_db 转换', 'TAB-1'),
-        ('tab2', 1, '2', 'PRJ 更新',     'TAB-2'),
-        ('tab3', 2, '3', 'Excel ↔ mac',  'TAB-3'),
-        ('tab4', 3, '4', 'FOCUS6 求解器', 'TAB-4'),
+        # 三个功能相互独立，编号字段保留给数据键使用，UI 上不再显示
+        ('tab1', 0, '', 'blade_db 转换', 'TAB-1'),
+        ('tab2', 1, '', 'PRJ 更新',     'TAB-2'),
+        ('tab3', 2, '', 'xlsx ↔ mac',  'TAB-3'),
     )
 
     def __init__(self):
@@ -272,19 +215,10 @@ class BladeConverterPanel(QWidget):
             self.MODULE_ID,
             self.DEFAULT_INPUT_SUBDIR,
             self.DEFAULT_OUTPUT_SUBDIR,
-            extra_keys=self.EXTRA_KEYS,
         )
         paths = config_center.get_paths(self.MODULE_ID)
         self.input_dir = paths['input']
         self.out_dir = paths['output']
-        self.solver_paths = {k: paths.get(k, '') for k in self.EXTRA_KEYS}
-
-        # 触发老配置自动迁移（farob_exe → modules_path），
-        # 保证随后打开「⚙ 设置」也能立刻看到 modules_path 已填好
-        self._resolve_modules_path()
-        # 迁移可能更新了 self.solver_paths，这里再读一次保证 UI 一致
-        paths = config_center.get_paths(self.MODULE_ID)
-        self.solver_paths = {k: paths.get(k, '') for k in self.EXTRA_KEYS}
 
         config_center.paths_changed.connect(self._on_paths_changed)
 
@@ -302,7 +236,6 @@ class BladeConverterPanel(QWidget):
         paths = config_center.get_paths(self.MODULE_ID)
         self.input_dir = paths['input']
         self.out_dir = paths['output']
-        self.solver_paths = {k: paths.get(k, '') for k in self.EXTRA_KEYS}
         if hasattr(self, 'tabs'):
             self._sync_path_edits()
 
@@ -338,17 +271,6 @@ class BladeConverterPanel(QWidget):
                 cur = edit.text().strip()
                 if not cur:
                     edit.setText(defaults[key])
-        # TAB-4
-        if hasattr(self, 'tab4_mac_edit'):
-            for edit, key in [
-                (self.tab4_mac_edit, 'tab4_mac'),
-                (self.tab4_sum_edit, 'tab4_sum'),
-                (self.tab4_load_edit, 'tab4_load'),
-                (self.tab4_zspan_edit, 'tab4_zspan'),
-            ]:
-                cur = edit.text().strip()
-                if not cur:
-                    edit.setText(defaults[key])
 
     def _default_paths(self):
         in_dir = Path(self.input_dir)
@@ -365,11 +287,6 @@ class BladeConverterPanel(QWidget):
             # TAB-3：默认 mac → Excel，输出 = 输入 stem + _trans + 目标扩展名
             'tab3_input': str(in_dir / DEFAULT_TXT_INPUT_FILE),
             'tab3_output': str(out_dir / 'txt_excel' / f'{Path(DEFAULT_TXT_INPUT_FILE).stem}_trans.xlsx'),
-            # TAB-4
-            'tab4_mac': str(in_dir / DEFAULT_MAC_FILE),
-            'tab4_sum': str(out_dir / 'solver_work'),
-            'tab4_load': '',   # 7 列格式：x/fx/fy/fz/mx/my/mz；仅应变/挠度/载荷转化需要
-            'tab4_zspan': '',  # 可选：留空则从 mac 的 PLACE SHAPE 自动推算
         }
 
     # ---------- UI 构建 ----------
@@ -410,8 +327,7 @@ class BladeConverterPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_tab1(defaults), '  TAB-1 - blade_db 转换  ')
         self.tabs.addTab(self._build_tab2(defaults), '  TAB-2 - PRJ 更新  ')
-        self.tabs.addTab(self._build_tab3(defaults), '  TAB-3 - Excel ↔ mac  ')
-        self.tabs.addTab(self._build_tab4(defaults), '  TAB-4 - FOCUS6 求解器  ')
+        self.tabs.addTab(self._build_tab3(defaults), '  TAB-3 - xlsx ↔ mac  ')
         self.tabs.tabBar().setVisible(False)
         self.tabs.setStyleSheet('QTabWidget::pane { border: none; }')
         self.tabs.currentChanged.connect(lambda _idx: self._update_stepper_state())
@@ -432,10 +348,12 @@ class BladeConverterPanel(QWidget):
         self._stepper_nodes = {}
         self._stepper_lines = []
         for i, (key, idx, num, label, full) in enumerate(self._TAB_STEPS):
-            node = QPushButton(f'  {num}  {label}')
+            # 三个功能平级：按钮文字只显示功能简称，不带 1/2/3 编号
+            node_text = f'  {label}' if not num else f'  {num}  {label}'
+            node = QPushButton(node_text)
             node.setObjectName('stepperNode')
             node.setCursor(Qt.PointingHandCursor)
-            node.setToolTip(f'{full} — 点击切到该阶段')
+            node.setToolTip(f'{full} — 点击切到该功能')
             node.setProperty('stageKey', key)
             node.clicked.connect(self._on_stepper_click)
             layout.addWidget(node, 1)
@@ -510,6 +428,7 @@ class BladeConverterPanel(QWidget):
         self.tab1_solver_combo = QComboBox()
         self.tab1_solver_combo.addItem('farob', SOLVER_FAROB)
         self.tab1_solver_combo.addItem('frbex', SOLVER_FRBEX)
+        self.tab1_solver_combo.setCurrentIndex(1)  # 默认 frbex
         self.tab1_solver_combo.setToolTip('影响输出文件名后缀（_farob / _frbex）')
         grid.addWidget(self.tab1_solver_combo, 3, 1)
 
@@ -608,8 +527,8 @@ class BladeConverterPanel(QWidget):
 
         grid.addWidget(QLabel('转换方向:'), 0, 0)
         self.tab3_dir_group = QButtonGroup(self)
-        self.tab3_rb_txt_to_xlsx = QRadioButton('mac → Excel  (blade_geometry.mac → blade_data.xlsx)')
-        self.tab3_rb_xlsx_to_txt = QRadioButton('Excel → mac  (blade_data.xlsx → blade_geometry_new.mac)')
+        self.tab3_rb_txt_to_xlsx = QRadioButton('mac → xlsx')
+        self.tab3_rb_xlsx_to_txt = QRadioButton('xlsx → mac')
         self.tab3_rb_txt_to_xlsx.setChecked(True)
         self.tab3_dir_group.addButton(self.tab3_rb_txt_to_xlsx, 0)
         self.tab3_dir_group.addButton(self.tab3_rb_xlsx_to_txt, 1)
@@ -621,11 +540,15 @@ class BladeConverterPanel(QWidget):
         dir_layout.addWidget(self.tab3_rb_xlsx_to_txt)
         dir_layout.addStretch()
         grid.addWidget(dir_wrap, 0, 1, 1, 2)
-        # 切换方向时同步默认文件名
+        # 切换方向时同步默认文件名（两个 RadioButton 都要连，
+        # 因为 checked 变化的按钮才会触发 toggled(True)，另一个触发 toggled(False)）
         self.tab3_rb_txt_to_xlsx.toggled.connect(self._on_tab3_direction_change)
+        self.tab3_rb_xlsx_to_txt.toggled.connect(self._on_tab3_direction_change)
 
         grid.addWidget(QLabel('输入文件:'), 1, 0)
         self.tab3_input_edit = QLineEdit(defaults['tab3_input'])
+        # 输入改变时自动同步输出文件（stem + 扩展名按方向切换）
+        self.tab3_input_edit.textChanged.connect(self._on_tab3_input_change)
         grid.addWidget(self.tab3_input_edit, 1, 1)
         grid.addWidget(self._browse_btn(self.tab3_input_edit, 'file'), 1, 2)
 
@@ -657,28 +580,50 @@ class BladeConverterPanel(QWidget):
     def _on_tab3_direction_change(self, checked):
         if not checked:
             return
-        # 方向切换：根据当前输入文件 stem 推导输出（输入名 + _trans + 目标扩展名）
+        # 方向切换：若输入为空则回填默认，然后强制同步输出扩展名
         in_dir = Path(self.input_dir)
-        out_dir = Path(self.out_dir)
         if self.tab3_rb_txt_to_xlsx.isChecked():
-            # mac → Excel：输入默认 .mac，输出默认 .xlsx
             default_in_name = DEFAULT_TXT_INPUT_FILE
-            target_ext = '.xlsx'
         else:
-            # Excel → mac：输入默认 .xlsx，输出默认 .mac
             default_in_name = DEFAULT_EXCEL_INPUT_FILE
-            target_ext = '.mac'
-        # 输入为空 → 回填默认输入
         if not self.tab3_input_edit.text().strip():
             self.tab3_input_edit.setText(str(in_dir / default_in_name))
-        # 用当前输入 stem 推导输出（同名 + _trans + 目标扩展名）
-        in_path = Path(self.tab3_input_edit.text().strip())
-        if in_path.stem:
-            out_path = out_dir / 'txt_excel' / f'{in_path.stem}_trans{target_ext}'
-            # 仅当输出为空时才覆盖（避免清掉用户手改的路径）
-            if not self.tab3_output_edit.text().strip():
-                self.tab3_output_edit.setText(str(out_path))
+        # 强制同步输出（方向变了，扩展名必须跟着变，不保留旧扩展名）
+        self._sync_tab3_output(force=True)
         self._update_tab3_info_text()
+
+    def _on_tab3_input_change(self, _text: str):
+        """输入文件改变（用户输入或浏览选择）→ 同步输出 stem + 扩展名。"""
+        self._sync_tab3_output(force=False)
+
+    def _sync_tab3_output(self, force: bool):
+        """根据当前输入与方向，刷新输出文件路径。
+
+        - force=False（输入变化）：保留输出目录与「_trans」约定，更新 stem + 扩展名
+        - force=True（方向切换）：扩展名必须切到目标格式，即使用户改过也覆盖
+        """
+        in_text = self.tab3_input_edit.text().strip()
+        if not in_text:
+            return
+        in_path = Path(in_text)
+        if not in_path.stem:
+            return
+        if self.tab3_rb_txt_to_xlsx.isChecked():
+            target_ext = '.xlsx'
+        else:
+            target_ext = '.mac'
+        # 输出目录：保留当前输出字段的父目录；首次落到 txt_excel/
+        cur_out = self.tab3_output_edit.text().strip()
+        if cur_out:
+            out_dir = Path(cur_out).parent
+        else:
+            out_dir = Path(self.out_dir) / 'txt_excel'
+        new_out = out_dir / f'{in_path.stem}_trans{target_ext}'
+        new_out_str = str(new_out)
+        # force=True: 方向切换必须覆盖扩展名
+        # force=False: 输入变化也覆盖（用户明确说「不要我手动修改」）
+        if new_out_str != cur_out:
+            self.tab3_output_edit.setText(new_out_str)
 
     def _update_tab3_info_text(self):
         if self.tab3_rb_txt_to_xlsx.isChecked():
@@ -690,182 +635,10 @@ class BladeConverterPanel(QWidget):
         else:
             txt = (
                 '• 方向：blade_data.xlsx → blade_geometry.mac\n'
-                '• 要求 Excel 由 TAB-3 正向转换生成（PlaceShapes 必须含 CenterX / CenterY）\n'
+                '• 要求 xlsx 由 TAB-3 正向转换生成（PlaceShapes 必须含 CenterX / CenterY）\n'
                 '• 输出与原 mac 等价的文本格式（缩进/对齐尽量保留）'
             )
         self.tab3_info_label.setText(txt)
-
-    # ----- TAB-4: FOCUS6 求解器 -----
-    def _build_tab4(self, defaults):
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(8, 8, 8, 8)
-        v.setSpacing(8)
-
-        # 求解器路径提示
-        solver_box = QGroupBox('FOCUS6 Modules 目录（在「⚙ 设置」里配置）')
-        solver_box.setObjectName('gb_solver')
-        solver_layout = QGridLayout(solver_box)
-        solver_layout.setContentsMargins(10, 8, 10, 8)
-        solver_layout.setSpacing(6)
-        self.tab4_solver_labels = {}
-        lbl_modules = QLabel(self.solver_paths.get('modules_path', '') or '(未配置)')
-        lbl_modules.setWordWrap(True)
-        lbl_modules.setStyleSheet('color: #666;')
-        self.tab4_solver_labels['modules_path'] = lbl_modules
-        solver_layout.addWidget(QLabel('Modules 目录:'), 0, 0)
-        solver_layout.addWidget(lbl_modules, 0, 1)
-        hint_lbl = QLabel('内含 farob/ frbex/ utils/ 等子目录；具体用哪个求解器由下方「求解器类型」决定。')
-        hint_lbl.setStyleSheet('color: #999; font-size: 11px;')
-        solver_layout.addWidget(hint_lbl, 1, 0, 1, 2)
-        solver_layout.setColumnStretch(1, 1)
-        v.addWidget(solver_box)
-
-        # 输入配置
-        box = QGroupBox('输入/输出')
-        box.setObjectName('gb_data')
-        grid = QGridLayout(box)
-        grid.setContentsMargins(10, 8, 10, 8)
-        grid.setSpacing(6)
-
-        grid.addWidget(QLabel('mac 文件:'), 0, 0)
-        self.tab4_mac_edit = QLineEdit(defaults['tab4_mac'])
-        grid.addWidget(self.tab4_mac_edit, 0, 1)
-        grid.addWidget(self._browse_btn(self.tab4_mac_edit, 'file'), 0, 2)
-
-        grid.addWidget(QLabel('工作目录（SUM）:'), 1, 0)
-        self.tab4_sum_edit = QLineEdit(defaults['tab4_sum'])
-        grid.addWidget(self.tab4_sum_edit, 1, 1)
-        grid.addWidget(self._browse_btn(self.tab4_sum_edit, 'dir'), 1, 2)
-
-        # 载荷文件行（封装为单独 widget，便于整行显隐）
-        self.tab4_load_row = QWidget()
-        load_row_lay = QHBoxLayout(self.tab4_load_row)
-        load_row_lay.setContentsMargins(0, 0, 0, 0)
-        load_row_lay.setSpacing(6)
-        load_row_lay.addWidget(QLabel('载荷文件 (可选):'))
-        self.tab4_load_edit = QLineEdit(defaults['tab4_load'])
-        self.tab4_load_edit.setPlaceholderText('7 列格式 x/fx/fy/fz/mx/my/mz（应变/挠度/载荷转化需要）')
-        load_row_lay.addWidget(self.tab4_load_edit, 1)
-        load_row_lay.addWidget(self._browse_btn(self.tab4_load_edit, 'file'))
-        grid.addWidget(self.tab4_load_row, 2, 0, 1, 3)
-
-        # ZSPAN 文件行（同样封装）
-        self.tab4_zspan_row = QWidget()
-        zspan_row_lay = QHBoxLayout(self.tab4_zspan_row)
-        zspan_row_lay.setContentsMargins(0, 0, 0, 0)
-        zspan_row_lay.setSpacing(6)
-        zspan_row_lay.addWidget(QLabel('ZSPAN 文件 (可选):'))
-        self.tab4_zspan_edit = QLineEdit(defaults['tab4_zspan'])
-        self.tab4_zspan_edit.setPlaceholderText('留空则从 mac 的 PLACE SHAPE 自动读取')
-        zspan_row_lay.addWidget(self.tab4_zspan_edit, 1)
-        zspan_row_lay.addWidget(self._browse_btn(self.tab4_zspan_edit, 'file'))
-        grid.addWidget(self.tab4_zspan_row, 3, 0, 1, 3)
-
-        grid.setColumnStretch(1, 1)
-        v.addWidget(box)
-
-        # 运行选项
-        opts = QWidget()
-        opts_layout = QHBoxLayout(opts)
-        opts_layout.setContentsMargins(0, 0, 0, 0)
-        opts_layout.setSpacing(8)
-
-        mode_box = QGroupBox('运行模式')
-        mode_layout = QVBoxLayout(mode_box)
-        self.tab4_mode_group = QButtonGroup(self)
-        self.tab4_rb_single = QRadioButton('单求解器（下方选定功能）')
-        self.tab4_rb_one_click = QRadioButton('一键运行（并行执行所有步骤）')
-        self.tab4_rb_single.setChecked(True)
-        self.tab4_mode_group.addButton(self.tab4_rb_single, 0)
-        self.tab4_mode_group.addButton(self.tab4_rb_one_click, 1)
-        mode_layout.addWidget(self.tab4_rb_single)
-        mode_layout.addWidget(self.tab4_rb_one_click)
-        mode_layout.addStretch()
-
-        func_box = QGroupBox('单求解器功能')
-        func_layout = QVBoxLayout(func_box)
-        self.tab4_func_combo = QComboBox()
-        self.tab4_func_combo.addItem(FUNCTION_READ_MAC, FUNCTION_READ_MAC)
-        self.tab4_func_combo.addItem(FUNCTION_PARSE_MAC, FUNCTION_PARSE_MAC)
-        self.tab4_func_combo.addItem(FUNCTION_WEIGHT, FUNCTION_WEIGHT)
-        self.tab4_func_combo.addItem(FUNCTION_FREQUENCY, FUNCTION_FREQUENCY)
-        self.tab4_func_combo.addItem(FUNCTION_LOAD_CONVERSION, FUNCTION_LOAD_CONVERSION)
-        self.tab4_func_combo.addItem(FUNCTION_STRAIN, FUNCTION_STRAIN)
-        self.tab4_func_combo.addItem(FUNCTION_TIP_DEFLECTION, FUNCTION_TIP_DEFLECTION)
-        self.tab4_func_combo.currentIndexChanged.connect(self._on_tab4_func_changed)
-        func_layout.addWidget(self.tab4_func_combo)
-        func_layout.addStretch()
-
-        solver_type_box = QGroupBox('求解器类型')
-        st_layout = QVBoxLayout(solver_type_box)
-        self.tab4_st_group = QButtonGroup(self)
-        self.tab4_rb_farob = QRadioButton('farob')
-        self.tab4_rb_frbex = QRadioButton('frbex')
-        self.tab4_rb_frbex.setChecked(True)
-        self.tab4_st_group.addButton(self.tab4_rb_farob, 0)
-        self.tab4_st_group.addButton(self.tab4_rb_frbex, 1)
-        st_layout.addWidget(self.tab4_rb_farob)
-        st_layout.addWidget(self.tab4_rb_frbex)
-        st_layout.addStretch()
-
-        opts_layout.addWidget(mode_box, 1)
-        opts_layout.addWidget(func_box, 1)
-        opts_layout.addWidget(solver_type_box, 1)
-        v.addWidget(opts)
-
-        # 高级参数
-        adv = QGroupBox('高级参数')
-        adv_layout = QGridLayout(adv)
-        adv_layout.setContentsMargins(10, 8, 10, 8)
-        adv_layout.setSpacing(6)
-        adv_layout.addWidget(QLabel('drmx（frbex）:'), 0, 0)
-        self.tab4_drmx_edit = QLineEdit(str(FRBEX_DEFAULT_DRMX))
-        self.tab4_drmx_edit.setMaximumWidth(100)
-        adv_layout.addWidget(self.tab4_drmx_edit, 0, 1)
-        self.tab4_bg_run_cb = QCheckBox('后台运行（隐藏求解器窗口）')
-        self.tab4_bg_run_cb.setChecked(True)
-        adv_layout.addWidget(self.tab4_bg_run_cb, 0, 2)
-        adv_layout.setColumnStretch(3, 1)
-        v.addWidget(adv)
-
-        # 刷新求解器路径显示
-        self._refresh_solver_labels()
-
-        v.addStretch()
-        v.addWidget(self._build_exec_bar(
-            stage='tab4',
-            run_text='运行 TAB-4',
-            run_slot=self._on_run_tab4,
-            open_dir_getter=lambda: Path(self.tab4_sum_edit.text()),
-        ))
-
-        # 所有 widget 创建完毕后再触发一次显隐同步
-        self._on_tab4_func_changed(self.tab4_func_combo.currentIndex())
-        return page
-
-    def _refresh_solver_labels(self):
-        """刷新 TAB-4 的求解器路径显示。"""
-        for key, lbl in self.tab4_solver_labels.items():
-            val = self.solver_paths.get(key, '') or ''
-            lbl.setText(val if val else '(未配置)')
-            lbl.setStyleSheet('color: #999;' if not val else 'color: #444;')
-
-    def _on_tab4_func_changed(self, idx):
-        """根据所选功能动态显隐载荷文件 / ZSPAN 行。
-
-        载荷文件用于：应变计算、叶尖挠度、载荷转化
-        ZSPAN 仅用于：farob 应变计算（其余场景隐藏，但仍允许显式提供）
-        """
-        if not hasattr(self, 'tab4_func_combo'):
-            return
-        func = self.tab4_func_combo.currentData()
-        need_load = func in (FUNCTION_STRAIN, FUNCTION_TIP_DEFLECTION, FUNCTION_LOAD_CONVERSION)
-        need_zspan = func == FUNCTION_STRAIN  # 仅 farob 应变才真正读 zspan
-        if hasattr(self, 'tab4_load_row'):
-            self.tab4_load_row.setVisible(need_load)
-        if hasattr(self, 'tab4_zspan_row'):
-            self.tab4_zspan_row.setVisible(need_zspan)
 
     # ----- 通用：浏览按钮 -----
     def _browse_btn(self, target_edit, kind):
@@ -885,7 +658,7 @@ class BladeConverterPanel(QWidget):
         if path:
             target_edit.setText(path)
 
-    # ----- 通用：执行栏（复用 shape_output_panel 模式）-----
+    # ----- 通用：执行栏（复用 shape_design_panel 模式）-----
     def _build_exec_bar(self, stage, run_text, run_slot, open_dir_getter, extra_btns=None):
         wrap = QWidget()
         wrap.setObjectName('execBar')
@@ -1124,194 +897,3 @@ class BladeConverterPanel(QWidget):
         else:
             self.tab3_open_btn.setEnabled(True)
             self._mark_stage_completed('tab3')
-
-    # ============================================================
-    # TAB-4 执行
-    # ============================================================
-    def _on_run_tab4(self):
-        mac_file = self.tab4_mac_edit.text().strip()
-        sum_folder = self.tab4_sum_edit.text().strip()
-        load_file = self.tab4_load_edit.text().strip()
-        zspan_file = self.tab4_zspan_edit.text().strip()
-        one_click = self.tab4_rb_one_click.isChecked()
-        solver_type = SOLVER_FAROB if self.tab4_rb_farob.isChecked() else SOLVER_FRBEX
-
-        if not mac_file or not Path(mac_file).exists():
-            QMessageBox.warning(self, '缺少 mac', f'文件不存在：{mac_file}')
-            return
-        if not sum_folder:
-            QMessageBox.warning(self, '缺少工作目录', '请指定 SUM 工作目录')
-            return
-
-        # 求解器路径检查（唯一 extras：modules_path）
-        modules_path = self._resolve_modules_path()
-        if not modules_path:
-            QMessageBox.warning(
-                self, '求解器未配置',
-                '未配置 FOCUS6 Modules 目录。\n请到「⚙ 设置」里配置「FOCUS6 Modules 目录」。',
-            )
-            return
-
-        # 高级参数
-        try:
-            drmx = int(self.tab4_drmx_edit.text().strip() or FRBEX_DEFAULT_DRMX)
-        except ValueError:
-            QMessageBox.warning(self, 'drmx 错误', 'drmx 必须是整数')
-            return
-        background_run = self.tab4_bg_run_cb.isChecked()
-
-        # 从 mac 提取半径（默认 50000 mm）
-        radius = self._extract_radius_from_mac(mac_file)
-
-        function = self.tab4_func_combo.currentData()
-
-        # 载荷文件检查：应变/挠度/载荷转化 必填
-        need_load = function in (FUNCTION_STRAIN, FUNCTION_TIP_DEFLECTION, FUNCTION_LOAD_CONVERSION)
-        if need_load and (not load_file or not Path(load_file).exists()):
-            QMessageBox.warning(
-                self, '缺少载荷文件',
-                f'当前功能 "{function}" 需要 7 列载荷文件（x/fx/fy/fz/mx/my/mz）。\n'
-                f'请检查输入：{load_file or "(空)"}',
-            )
-            return
-
-        # ZSPAN 自动补全：farob 应变需要；用户留空时从 mac 的 PLACE SHAPE 自动提取
-        zspan_file_resolved = zspan_file
-        zspan_source = 'user'
-        if function == FUNCTION_STRAIN and solver_type == SOLVER_FAROB and not zspan_file_resolved:
-            derived = self._derive_zspan_from_mac(mac_file, sum_folder)
-            if derived:
-                zspan_file_resolved = derived
-                zspan_source = 'auto-from-mac'
-
-        # 载荷转化：只走 modules_path/utils，不需要 solver_type 子目录
-        # 其余功能按 solver_type 选用 Modules/{farob|frbex}
-        if function == FUNCTION_LOAD_CONVERSION:
-            solver_path_for_params = str(Path(modules_path) / 'utils')
-        else:
-            solver_path_for_params = str(Path(modules_path) / solver_type)
-
-        params = {
-            'solver_type': solver_type,
-            'mac_solver_type': solver_type,
-            'function': function,
-            'modules_path': modules_path,
-            'solver_path': solver_path_for_params,
-            'sum_folder': sum_folder,
-            'mac_file': mac_file,
-            'radius': radius,
-            'drmx': drmx,
-            'background_run': background_run,
-            'load_file': load_file,
-            'zspan_file': zspan_file_resolved,
-        }
-
-        self.tab4_log.clear()
-        self.tab4_progress.setValue(0)
-        self._set_running('tab4', True)
-        self.tab4_open_btn.setEnabled(False)
-
-        self._log('tab4', f'模式: {"一键运行" if one_click else "单求解器"}')
-        self._log('tab4', f'求解器: {solver_type}')
-        if not one_click:
-            self._log('tab4', f'功能: {function}')
-        self._log('tab4', f'mac: {mac_file}')
-        self._log('tab4', f'工作目录: {sum_folder}')
-        self._log('tab4', f'modules_path: {modules_path}')
-        if load_file:
-            self._log('tab4', f'载荷文件: {load_file}')
-        if zspan_file_resolved:
-            tag = '' if zspan_source == 'user' else '  (从 mac PLACE SHAPE 自动生成)'
-            self._log('tab4', f'ZSPAN: {zspan_file_resolved}{tag}')
-        self._log('tab4', f'drmx: {drmx}, background: {background_run}, radius: {radius}')
-        self._log('tab4', '---')
-
-        self._tab4_worker = ConverterTab4Worker(params, one_click=one_click)
-        self._tab4_worker.progress.connect(self._on_tab4_progress)
-        self._tab4_worker.finished.connect(self._on_tab4_finished)
-        self._tab4_worker.start()
-
-    def _resolve_modules_path(self):
-        """返回 ConfigCenter extras 中的 modules_path（FOCUS6 Modules 目录）。
-
-        兼容老配置：若用户曾配过 ``farob_exe``，则向上推一级推断 Modules 目录，
-        并把推断结果写入 ``modules_path``、清空 ``farob_exe``。
-        新配置直接走 modules_path 字段。
-        """
-        # 直接从 config_center 拉 raw extras，避免 self.solver_paths 已按 EXTRA_KEYS 过滤
-        raw = config_center.get_paths(self.MODULE_ID)
-        val = raw.get('modules_path', '') or ''
-        if val:
-            return val
-        # 迁移兜底：从老 farob_exe 推断（.../Modules/farob/farob.exe → .../Modules）
-        farob = raw.get('farob_exe', '') or ''
-        if not farob:
-            return ''
-        p = Path(farob)
-        if p.parent.name.lower() == 'farob':
-            inferred = str(p.parent.parent)
-            config_center.set_extra(self.MODULE_ID, 'modules_path', inferred)
-            config_center.set_extra(self.MODULE_ID, 'farob_exe', '')
-            # 同步本地缓存
-            self.solver_paths['modules_path'] = inferred
-            return inferred
-        return str(p.parent)
-
-    @staticmethod
-    def _derive_zspan_from_mac(mac_file, sum_folder):
-        """从 mac 的 PLACE SHAPE 行提取展向位置（mm），写到 sum_folder/zspan_auto.txt。
-
-        PLACE SHAPE 行格式：``PLACE SHAPE  R_1.5  1500`` —— 最后一个 token 即 span 位置 mm。
-        返回生成的文件路径；失败返回空串。
-        """
-        import re
-        try:
-            with open(mac_file, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            spans = []
-            for line in lines:
-                m = re.match(r'^\s*PLACE\s+SHAPE\s+\S+\s+(\d+\.?\d*)', line,
-                             re.IGNORECASE)
-                if m:
-                    try:
-                        spans.append(float(m.group(1)))
-                    except ValueError:
-                        continue
-            if not spans:
-                return ''
-            # 去重 + 排序
-            spans = sorted(set(spans))
-            Path(sum_folder).mkdir(parents=True, exist_ok=True)
-            out = Path(sum_folder) / 'zspan_auto.txt'
-            with open(out, 'w', encoding='utf-8') as f:
-                for s in spans:
-                    f.write(f"{s}\n")
-            return str(out)
-        except Exception:
-            return ''
-
-    @staticmethod
-    def _extract_radius_from_mac(mac_file):
-        """从 mac 文件提取 RADIUS（mm），失败返回 '50000'。"""
-        import re
-        try:
-            with open(mac_file, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            m = re.search(r'DEF\s+PARA\s*,\s*RADIUS\s*=\s*(\d+\.?\d*)',
-                          content, re.IGNORECASE)
-            return m.group(1) if m else '50000'
-        except Exception:
-            return '50000'
-
-    def _on_tab4_progress(self, percent, msg):
-        self.tab4_progress.setValue(percent)
-        self._log('tab4', msg)
-
-    def _on_tab4_finished(self):
-        self._set_running('tab4', False)
-        res = self._tab4_worker.result
-        if res and res.get('error'):
-            QMessageBox.critical(self, 'TAB-4 出错', res['error'])
-        else:
-            self.tab4_open_btn.setEnabled(True)
-            self._mark_stage_completed('tab4')

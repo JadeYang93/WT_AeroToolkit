@@ -83,7 +83,8 @@ def normalize_number_str(value) -> str:
 
     用于解决 Excel 把整数存为 float 的问题（如 76000 → 76000.0）：
       - 整数值（76000.0）→ "76000"
-      - 浮点数（1.5, 0.293）→ 用 :g 紧凑表示
+      - 浮点数 → str(f)（Python 3 repr 算法，最短 round-trip 表示，
+        能完整保留精度，如 830000.00204082 → "830000.00204082"）
       - 科学计数法 → 大写 E（与 MAC 文件原格式一致）
       - 非数值 → str(value)
       - NaN/None → ""（空字符串）
@@ -101,7 +102,10 @@ def normalize_number_str(value) -> str:
         return s
     if f == int(f):
         return str(int(f))
-    out = f"{f:g}"
+    # Python 3 str(float) 用 David Gay 最短 round-trip 表示，
+    # 避免老逻辑 `f"{f:g}"` 默认 6 位有效数字截断精度（如
+    # 830000.00204082 → "830000"）。
+    out = str(f)
     if 'e' in out:
         out = out.upper().replace('e', 'E')
     return out

@@ -96,34 +96,81 @@ METRICS_INFO = {
 }
 
 
-def _add_summary_table(ax, rows, col_labels):
+def _add_summary_table(ax, rows, col_labels, max_rows_per_block=12, max_blocks=3):
     """在 ax 右上角加汇总表格。
 
     rows: [[c1, c2], ...] 行数据
     col_labels: [列名1, 列名2]
     深钢蓝表头 + 白字 + 斑马纹。
+
+    多列布局：当行数 > ``max_rows_per_block`` 时，自动横向切到 ``max_blocks`` 块
+    （每块 2 列），最多容纳 ``max_rows_per_block × max_blocks`` 行。多块时压缩列宽、
+    缩字号，保证不挤占绘图区。
     """
     if not rows:
         return
-    tbl = ax.table(cellText=rows,
-                   colLabels=col_labels,
+    # 1. 切块：每块最多 max_rows_per_block 行，最多 max_blocks 块（超出的尾部丢弃）
+    blocks = []
+    for i in range(0, len(rows), max_rows_per_block):
+        if len(blocks) >= max_blocks:
+            break
+        blocks.append(rows[i:i + max_rows_per_block])
+    n_blocks = len(blocks)
+    max_block_rows = max(len(b) for b in blocks)
+
+    # 2. 合并成一张大表：行 = max_block_rows + 1（表头），列 = 2 * n_blocks
+    n_cols = 2 * n_blocks
+    n_total_rows = max_block_rows + 1
+    cell_text = [[''] * n_cols for _ in range(n_total_rows)]
+    for b in range(n_blocks):
+        cell_text[0][b * 2] = col_labels[0]
+        cell_text[0][b * 2 + 1] = col_labels[1]
+    for b, block in enumerate(blocks):
+        for r, row in enumerate(block):
+            cell_text[r + 1][b * 2] = row[0]
+            cell_text[r + 1][b * 2 + 1] = row[1]
+
+    # 3. 列宽：单块保留原默认；多块整体压缩、每块内 label 列稍宽于 value 列
+    if n_blocks == 1:
+        col_widths = [0.22, 0.14]
+    else:
+        # 总宽随块数收缩（避免挤掉绘图区）；label : value ≈ 6 : 4
+        total_w = 0.36 * n_blocks * 0.82
+        per_block = total_w / n_blocks
+        col_widths = []
+        for _ in range(n_blocks):
+            col_widths.append(per_block * 0.6)
+            col_widths.append(per_block * 0.4)
+
+    # 4. 建表（不用 colLabels，把表头塞进 cellText 第一行统一上色）
+    tbl = ax.table(cellText=cell_text,
                    loc='upper right',
                    cellLoc='center',
-                   colWidths=[0.22, 0.14])
+                   colWidths=col_widths)
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(10)
+    tbl.set_fontsize(10 if n_blocks == 1 else 9)
     tbl.scale(1, 1.5)
-    n_rows = len(rows)
-    for r in range(n_rows + 1):
-        for c in range(2):
+
+    # 5. 上色：表头深钢蓝、行斑马纹、空单元格淡化（无边框）
+    for r in range(n_total_rows):
+        for c in range(n_cols):
             cell = tbl[r, c]
+            txt = cell_text[r][c]
             if r == 0:
-                cell.set_facecolor('#1e3a5f')
-                cell.set_text_props(color='white', weight='bold')
+                if txt:
+                    cell.set_facecolor('#1e3a5f')
+                    cell.set_text_props(color='white', weight='bold')
+                else:
+                    cell.set_facecolor('white')
+                    cell.set_edgecolor('white')
             else:
-                cell.set_edgecolor('#cbd5e1')
-                if r % 2 == 0:
-                    cell.set_facecolor('#f1f5f9')
+                if not txt:
+                    cell.set_facecolor('white')
+                    cell.set_edgecolor('white')
+                else:
+                    cell.set_edgecolor('#cbd5e1')
+                    if r % 2 == 0:
+                        cell.set_facecolor('#f1f5f9')
 
 
 def _clamp_ti_yaxis(ax, bin_df, percentile=95, buffer=0.15):
@@ -566,6 +613,72 @@ def plot_monthly_ti_bin_timeseries(df_ti, out_dir, highlight_turbines=None,
         _clamp_ti_yaxis(ax, pivot)
         plt.tight_layout()
         out_path = os.path.join(out_dir, f'月度{int(bin_center)}ms湍流度曲线.png')
+        fig.savefig(out_path, dpi=DPI, bbox_inches='tight')
+        plt.close(fig)
+        count += 1
+    return count
+
+
+def plot_monthly_ti_bin_cross_year(df_ti, out_dir):
+    """跨年同月对比图：每个风速 bin 一张图，X 轴 1-12 月，每年一条曲线。
+
+    与 ``plot_monthly_ti_bin_timeseries`` 互补：那张是「同 bin 看不同机组 / 时间序列」，
+    本张是「同 bin 看不同年份的同月均值」，便于回答「今年 1 月比去年 1 月更湍流吗？」。
+
+    跨机组简单平均（每个 (年, 月) 一个 TI 均值），仅当数据跨 ≥2 年时生成。
+
+    Args:
+        df_ti: read_monthly_ti_file 返回的 DataFrame（含 turbine, month, bin_center, ti）
+
+    Returns:
+        生成的图数量（只有 1 年数据时返回 0）
+    """
+    if df_ti is None or df_ti.empty:
+        return 0
+    # 顶层判断：整体只有 1 年 → 直接跳过，省得每个 bin 都白算一遍
+    years_all = pd.Series(df_ti['month'].dt.year.unique())
+    if len(years_all) < 2:
+        return 0
+
+    count = 0
+    for bin_center, grp in df_ti.groupby('bin_center'):
+        years = sorted(grp['month'].dt.year.unique())
+        if len(years) < 2:
+            continue  # 该 bin 只有 1 年数据，跳过
+
+        # 每年一条曲线：跨机组平均，X 轴 = 月-of-year (1-12)
+        year_curves = {}
+        for y in years:
+            sub = grp[grp['month'].dt.year == y].copy()
+            sub['_moy'] = sub['month'].dt.month
+            moy_mean = sub.groupby('_moy')['ti'].mean()
+            year_curves[y] = moy_mean
+
+        fig, ax = plt.subplots(figsize=(12, 7))
+        colors = _distinct_colors(len(year_curves))
+        summary_rows = []
+        for i, y in enumerate(years):
+            curve = year_curves[y]
+            xs = list(curve.index)
+            ys = list(curve.values)
+            ax.plot(xs, ys, '-o', color=colors[i],
+                    label=f'{y} 年', linewidth=2.2, alpha=0.9, markersize=7)
+            summary_rows.append([f'{y} 年', f'{curve.mean():.3f}'])
+
+        _add_summary_table(ax, summary_rows, ['年份', f'年均TI@{int(bin_center)}m/s'])
+        ax.set_xticks(range(1, 13))
+        ax.set_xticklabels([f'{m}月' for m in range(1, 13)], fontsize=10)
+        ax.set_xlabel('月份', fontsize=13)
+        ax.set_ylabel('湍流度', fontsize=13)
+        ax.set_title(
+            f'月度{int(bin_center)}m/s 湍流度跨年对比（{years[0]}–{years[-1]}，{len(years)} 年）',
+            fontsize=15, fontweight='bold',
+        )
+        ax.legend(title='年份', fontsize=10, title_fontsize=11, loc='upper left')
+        ax.grid(axis='both', alpha=0.3)
+        ax.set_xlim(0.5, 12.5)
+        plt.tight_layout()
+        out_path = os.path.join(out_dir, f'月度{int(bin_center)}ms湍流度跨年对比.png')
         fig.savefig(out_path, dpi=DPI, bbox_inches='tight')
         plt.close(fig)
         count += 1

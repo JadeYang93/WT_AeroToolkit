@@ -118,12 +118,12 @@ DEFAULT_EXCEL_OUTPUT_FILE = "blade_data.xlsx"
 DEFAULT_EXCEL_INPUT_FILE = "blade_data.xlsx"
 DEFAULT_TXT_OUTPUT_FILE = "blade_geometry_new.mac"
 
-# FOCUS6求解器相关（兜底默认值；实际由 ConfigCenter extras 提供）
+# FOCUS6 相关（兜底默认值；实际由 ConfigCenter extras 提供）
 DEFAULT_MODULES_PATH = r"C:\Program Files (x86)\ECN_WMC\FOCUS6.3\Modules"
 DEFAULT_MAC_FILE = "blade_geometry.mac"
 
 # =============================================================================
-# FOCUS6求解器常量
+# FOCUS6 常量
 # =============================================================================
 
 SOLVER_FAROB = "farob"

@@ -22,6 +22,7 @@ from plotting import (
     plot_timeseries_curve, plot_monthly_curve,
     plot_ti_bin_curve, plot_ti_p90_per_turbine,
     plot_monthly_ti_bin_timeseries, plot_monthly_ti_per_turbine_timeseries,
+    plot_monthly_ti_bin_cross_year,
 )
 from export import export_excel
 
@@ -105,6 +106,14 @@ def _run_monthly_ti(data_dir, out_dir, highlight_turbines=None,
                                                         turbine_blades=turbine_blades)
     for t in sorted(df_ti['turbine'].unique()):
         log(None, f'  已生成 机组{int(t)}号月度湍流度曲线.png')
+    # 视图3（跨年）：数据覆盖 ≥2 年时，每 bin 一张跨年同月对比图
+    n_cross = plot_monthly_ti_bin_cross_year(df_ti, out_dir)
+    if n_cross > 0:
+        plot_count += n_cross
+        years_all = sorted(df_ti['month'].dt.year.unique())
+        log(None, f'  检测到跨年数据（{years_all[0]}–{years_all[-1]}），生成 {n_cross} 张跨年对比图')
+        for bc in sorted(df_ti['bin_center'].unique()):
+            log(None, f'  已生成 月度{int(bc)}ms湍流度跨年对比.png')
 
     log(90, '导出 Excel...')
     excel_path = export_excel(out_dir, pd.DataFrame(), pd.DataFrame(),

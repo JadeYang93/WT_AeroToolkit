@@ -10,16 +10,22 @@ import sys
 import subprocess
 import pandas as pd
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDate, QSize
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QCheckBox,
     QProgressBar, QTextEdit, QMessageBox, QGroupBox,
     QDateEdit, QScrollArea, QFrame, QSizePolicy,
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
 )
-from wind_farm_compare import run_compare
+from wind_farm_compare import run_compare, read_farm_monthly, METRIC_COLUMN
 from io_utils import scan_farm_dirs, EXCEL_FILENAME
 from global_config import config_center
+
+
+# 预览表表头字体（白字加粗）
+_BOLD_FONT = QFont()
+_BOLD_FONT.setBold(True)
 
 
 class FarmCompareWorker(QThread):
@@ -217,8 +223,38 @@ class WindFarmComparePanel(QWidget):
         layout.addWidget(params_box)
         left_col.addStretch()
 
-        # 右列保留空白（与 wind_farm_panel 视觉对称；缺数据时由日志提示，不在 UI 上预置引导）
-        right_col.addStretch()
+        # === 右列：数据预览区（扫描后显示每个风场的月均数据矩阵）===
+        preview_box = QGroupBox('数据预览')
+        preview_box.setObjectName('gb_preview')
+        preview_col = QVBoxLayout(preview_box)
+        preview_col.setContentsMargins(8, 6, 8, 6)
+        preview_col.setSpacing(4)
+        # 指标切换：风速 / 密度
+        metric_row = QHBoxLayout()
+        metric_row.setContentsMargins(0, 0, 0, 0)
+        metric_row.addWidget(QLabel('指标:'))
+        self.preview_metric_combo = QComboBox()
+        self.preview_metric_combo.addItem('月平均风速', userData='wind_speed')
+        self.preview_metric_combo.addItem('月平均密度', userData='density')
+        self.preview_metric_combo.currentIndexChanged.connect(self._refresh_preview)
+        metric_row.addWidget(self.preview_metric_combo)
+        metric_row.addStretch()
+        self.preview_status = QLabel('（未扫描）')
+        self.preview_status.setStyleSheet('color: #6b7280;')
+        metric_row.addWidget(self.preview_status)
+        preview_col.addLayout(metric_row)
+        # 数据表：行=月份，列=风场，单元格=该月该风场的指标值
+        self.preview_table = QTableWidget()
+        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.preview_table.setSelectionMode(QTableWidget.NoSelection)
+        self.preview_table.setFocusPolicy(Qt.NoFocus)
+        self.preview_table.setAlternatingRowColors(True)
+        # 第一列是月份标签 → 用 QTableView 自带 verticalHeader 显示行号会重复，隐藏它
+        self.preview_table.verticalHeader().setVisible(False)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.preview_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        preview_col.addWidget(self.preview_table, 1)
+        right_col.addWidget(preview_box)
 
         self._scroll.setWidget(inner)
 
@@ -290,6 +326,7 @@ class WindFarmComparePanel(QWidget):
                 f'并放入 {EXCEL_FILENAME}'
             )
             self.scan_status.setStyleSheet('color: #D32F2F;')
+            self._refresh_preview(farms=[])
             return
         valid = [f for f in farms if f['has_excel']]
         missing = [f for f in farms if not f['has_excel']]
@@ -305,6 +342,98 @@ class WindFarmComparePanel(QWidget):
             self.scan_status.setStyleSheet('color: #EF6C00;')
         else:
             self.scan_status.setStyleSheet('color: #2E7D32;')
+        # 同步刷新右侧预览
+        self._refresh_preview(farms=farms)
+
+    def _refresh_preview(self, farms=None, *_):
+        """刷新右下角数据预览表。
+
+        扫描时 _on_scan 会传 farms 参数；指标 combo 切换时不传，从 input_dir 重新扫一遍
+        （风场列表在会话中变化较少，重新扫描成本低，简单起见不复用缓存）。
+
+        表格结构：行 = 月份（合并所有风场出现过的月份），列 = 风场名，
+        单元格 = 该月该风场的当前指标值。空值显示 '—'。
+        """
+        # farms=None 时来自 combo 切换；重新扫描
+        if farms is None:
+            farms = scan_farm_dirs(self.input_dir)
+        valid_farms = [f for f in farms if f['has_excel']]
+        metric = self.preview_metric_combo.currentData()
+
+        if not valid_farms:
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(0)
+            self.preview_status.setText('（无可用风场）')
+            self.preview_status.setStyleSheet('color: #D32F2F;')
+            return
+
+        # 读取每个风场的月均数据
+        farm_monthly = {}
+        for farm in valid_farms:
+            df, _missing = read_farm_monthly(farm['excel_path'], [metric])
+            if df is None or df.empty or metric not in df.columns:
+                continue
+            farm_monthly[farm['name']] = df[metric]
+        if not farm_monthly:
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(0)
+            self.preview_status.setText(
+                f'（{len(valid_farms)} 个风场均缺「{METRIC_COLUMN[metric]}」sheet，'
+                f'请去 wind_farm 模块勾选「月」粒度重跑）'
+            )
+            self.preview_status.setStyleSheet('color: #EF6C00;')
+            return
+
+        # 合成透视表：index=月份并集，columns=风场名
+        combined = pd.DataFrame(farm_monthly).sort_index()
+        combined.index = combined.index.to_period('M') if not isinstance(combined.index, pd.PeriodIndex) else combined.index
+        months = list(combined.index)
+        farm_names = list(combined.columns)
+
+        self.preview_table.clear()
+        self.preview_table.setRowCount(len(months) + 1)  # +1 for header
+        self.preview_table.setColumnCount(len(farm_names) + 1)  # +1 for row header (月份)
+        self.preview_table.setItem(0, 0, self._make_header_cell('月份'))
+        for c, name in enumerate(farm_names):
+            self.preview_table.setItem(0, c + 1, self._make_header_cell(name))
+        for r, m in enumerate(months):
+            self.preview_table.setItem(r + 1, 0, self._make_row_header_cell(str(m)))
+            for c, name in enumerate(farm_names):
+                val = combined.iloc[r, c]
+                if pd.isna(val):
+                    cell = QTableWidgetItem('—')
+                    cell.setForeground(QColor('#d1d5db'))
+                else:
+                    cell = QTableWidgetItem(f'{val:.3f}')
+                    cell.setTextAlignment(Qt.AlignCenter)
+                cell.setFlags(Qt.ItemIsEnabled)
+                self.preview_table.setItem(r + 1, c + 1, cell)
+        self.preview_table.resizeColumnsToContents()
+        # 第一列（月份）保持宽一点，避免 'YYYY-MM' 被压窄
+        self.preview_table.setColumnWidth(0, max(80, self.preview_table.columnWidth(0)))
+        self.preview_status.setText(
+            f'{len(months)} 个月 × {len(farm_names)} 个风场'
+        )
+        self.preview_status.setStyleSheet('color: #2E7D32;')
+
+    @staticmethod
+    def _make_header_cell(text):
+        cell = QTableWidgetItem(text)
+        cell.setBackground(QColor('#1e3a5f'))
+        cell.setForeground(QColor('white'))
+        cell.setTextAlignment(Qt.AlignCenter)
+        cell.setFlags(Qt.ItemIsEnabled)
+        cell.setFont(_BOLD_FONT)
+        return cell
+
+    @staticmethod
+    def _make_row_header_cell(text):
+        cell = QTableWidgetItem(text)
+        cell.setBackground(QColor('#e0e7ef'))
+        cell.setForeground(QColor('#1f2937'))
+        cell.setTextAlignment(Qt.AlignCenter)
+        cell.setFlags(Qt.ItemIsEnabled)
+        return cell
 
     def _on_browse(self):
         d = QFileDialog.getExistingDirectory(self, '选择风场对比输入目录', self.input_dir)

@@ -25,6 +25,7 @@ from config import (
     ALPHA_OPTIONS, DEFAULT_ALPHA,
 )
 from global_config import config_center
+from tools.base_module_panel import BaseWorkerPanel
 
 
 class StatsWorker(QThread):
@@ -135,88 +136,64 @@ def _make_linestyle_icon(ls, fixed_lw=2.0):
     return QIcon(pm)
 
 
-class WindFarmStatsPanel(QWidget):
+class WindFarmStatsPanel(BaseWorkerPanel):
     # 模块自描述：声明 MODULE_ID + 默认子目录，ConfigCenter 用它注册路径
     MODULE_ID = 'wind_farm'
     DEFAULT_INPUT_SUBDIR = 'wind_farm'   # 相对 项目根/输入数据/
     DEFAULT_OUTPUT_SUBDIR = 'wind_farm'  # 相对 项目根/输出/
+    # banner 显示（基类 _build_banner 用）
+    MODULE_TITLE = '风场数据统计'
+    MODULE_SUBTITLE = 'W I N D   F A R M   S T A T I S T I C S'
+    # 执行栏按钮文字（基类 _build_exec_bar 用）
+    RUN_BUTTON_TEXT = '开始统计'
+    OPEN_BUTTON_TEXT = '📂  打开输出'
+
+    @property
+    def data_dir(self):
+        """wind_farm 特殊命名：data_dir 是基类 input_dir 的别名。"""
+        return self.input_dir
+
+    @property
+    def cache_path(self):
+        """缓存文件路径：输出目录下 .cache.pkl。跟随 out_dir 自动更新。"""
+        return os.path.join(self.out_dir, '.cache.pkl')
 
     def __init__(self):
-        super().__init__()
-
-        # 注册到全局配置中心（幂等）。首启时迁移助手已把旧文件从 输入数据/ 顶层
-        # 移到 输入数据/wind_farm/。之后路径从 .paths.json 读取。
-        config_center.register_module(
-            self.MODULE_ID, self.DEFAULT_INPUT_SUBDIR, self.DEFAULT_OUTPUT_SUBDIR)
-        paths = config_center.get_paths(self.MODULE_ID)
-        self.data_dir = paths['input']
-        self.out_dir = paths['output']
-        self.cache_path = os.path.join(self.out_dir, '.cache.pkl')
+        # data_type 必须在基类 __init__（会调 _build_body→_build_main_content）之前设好，
+        # 因为 _build_main_content 内的 _on_data_type_changed 等会读它
         self.data_type = 'raw'   # 'raw' (秒级原始数据) 或 'monthly_ti' (月度湍流表)
-
-        # 监听设置对话框的路径变更广播（其他模块改路径时也触发，slot 内会过滤 module_id）
-        config_center.paths_changed.connect(self._on_paths_changed)
-
-        self._build_ui()
-        # 关键：强制 panel 自身 minimum=0，否则 QScrollArea 的 minimumSizeHint
-        # 会透传内部双列卡片高度（~426px），叠加 bottom 180px = 606px，
-        # 在小屏或高 DPI 下窗口压不到 606，导致 bottom 被挤出可视区
-        self.setMinimumHeight(0)
-        self.setMinimumSize(0, 0)
+        super().__init__()  # 基类 __init__: register_module + get_paths + _build_body
+        # 基类已经创建好 run_btn，连到本类的 _on_start
+        self.run_btn.clicked.connect(self._on_start)
         # 启动时不自动扫描，需用户手动点击「扫描」按钮后才加载机组列表
         self.scan_status.setText('请点击「扫描」按钮加载数据文件列表')
 
-    def _on_paths_changed(self, module_id):
-        """全局路径变更 slot。module_id 是被改的模块；空串表示全量刷新。"""
-        if module_id and module_id != self.MODULE_ID:
-            return
-        paths = config_center.get_paths(self.MODULE_ID)
-        self.data_dir = paths['input']
-        self.out_dir = paths['output']
-        self.cache_path = os.path.join(self.out_dir, '.cache.pkl')
-        # folder_label 在 _build_ui 中创建，首次 paths_changed 可能在其之前
+    def _on_paths_changed_extra(self):
+        """基类已更新 input_dir/out_dir；本类只需同步 UI。"""
         if hasattr(self, 'folder_label'):
             self.folder_label.setText(self.data_dir)
             # 触发扫描，让用户立刻看到新目录里的机组
             self._on_scan()
 
-    def _build_ui(self):
+    def _build_main_content(self):
+        """主体内容：滚动区 + 双列卡片（机组配置 / 计算参数）。
+
+        基类 _build_body 调用本方法并把返回的 widget 加到 outer_layout，
+        然后基类自动追加 exec_bar。banner 也由基类负责。
+        """
         # 内容包滚动区：窗口高度不足时（机组选择/叶型映射等内容较多）可滚动查看，避免底部被裁剪
         self._scroll = CompactScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         # 关键：用 Ignored 策略让 layout 完全忽略 scroll 的 sizeHint/minimumSizeHint，
         # 否则 QScrollArea 的 minimumSizeHint 会透传内部双列卡片高度（~426px），
-        # 叠加 bottom 180px = 606px，把窗口高度锁死，在小屏/高 DPI 下 bottom 被挤出可视区
+        # 叠加 exec_bar 180px = 606px，把窗口高度锁死，在小屏/高 DPI 下 exec_bar 被挤出可视区
         self._scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self._scroll.setMinimumHeight(0)
         inner = QWidget()
         outer = QVBoxLayout(inner)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
-
-        # === 模块顶部 banner（深钢蓝整条填充 + 白色居中标题，呼应导航栏品牌色）===
-        banner = QWidget()
-        banner.setObjectName('moduleBanner')
-        banner_layout = QVBoxLayout(banner)
-        banner_layout.setContentsMargins(16, 14, 16, 14)
-        banner_layout.setSpacing(4)
-        self.module_title = QLabel('风场数据统计')
-        self.module_title.setObjectName('moduleTitle')
-        self.module_title.setAlignment(Qt.AlignCenter)
-        title_font = QFont('YouSheBiaoTiHei', 16)
-        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 4)   # 中文加宽字距，仪表盘感
-        self.module_title.setFont(title_font)
-        self.module_subtitle = QLabel('W I N D   F A R M   S T A T I S T I C S')
-        self.module_subtitle.setObjectName('moduleSubtitle')
-        self.module_subtitle.setAlignment(Qt.AlignCenter)
-        sub_font = QFont('Consolas', 8)
-        sub_font.setLetterSpacing(QFont.AbsoluteSpacing, 2)
-        sub_font.setBold(True)
-        self.module_subtitle.setFont(sub_font)
-        banner_layout.addWidget(self.module_title)
-        banner_layout.addWidget(self.module_subtitle)
-        outer.addWidget(banner)
 
         columns = QHBoxLayout()
         columns.setSpacing(8)
@@ -440,67 +417,7 @@ class WindFarmStatsPanel(QWidget):
 
         # 装入滚动区（上方参数配置）
         self._scroll.setWidget(inner)
-
-        # === 下方常驻执行栏（开始按钮+进度+日志，不随滚动）===
-        bottom = QWidget()
-        bottom.setObjectName('execBar')
-        # 强制占住空间：Fixed 垂直策略 + 最小高度，确保 scroll 再高也压不掉执行栏
-        bottom.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        bottom.setMinimumHeight(180)
-        # 左右分栏：左侧（按钮+进度，窄列固定宽）+ 右侧（日志，占满剩余宽度+高度）
-        bottom_layout = QHBoxLayout(bottom)
-        bottom_layout.setContentsMargins(2, 8, 2, 2)
-        bottom_layout.setSpacing(10)
-
-        # 左侧：开始按钮 + 进度条 + 打开输出（垂直堆叠，固定宽度）
-        left_wrap = QWidget()
-        left_wrap.setFixedWidth(320)
-        left_layout = QVBoxLayout(left_wrap)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        self.start_btn = QPushButton('开始统计')
-        self.start_btn.setMinimumHeight(40)
-        self.start_btn.setObjectName('primaryBtn')
-        self.start_btn.setCursor(Qt.PointingHandCursor)
-        self.start_btn.clicked.connect(self._on_start)
-        # 打开输出文件夹按钮：运行成功后启用，跨平台调系统资源管理器
-        # 次级 CTA（深钢蓝填充）—— 与主橙色形成冷暖对比，呼应导航栏品牌色
-        self.open_output_btn = QPushButton('📂  打开输出')
-        self.open_output_btn.setObjectName('secondaryBtn')
-        self.open_output_btn.setMinimumHeight(36)
-        self.open_output_btn.setCursor(Qt.PointingHandCursor)
-        self.open_output_btn.setToolTip(f'在系统资源管理器中打开当前输出目录\n（运行成功后可用）')
-        self.open_output_btn.setEnabled(False)
-        self.open_output_btn.clicked.connect(self._on_open_output)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        left_layout.addWidget(self.start_btn)
-        left_layout.addWidget(self.open_output_btn)
-        left_layout.addWidget(self.progress_bar)
-        left_layout.addStretch()   # 把执行控件顶到上方
-
-        # 右侧：日志区（占满 bottom 的剩余宽度 + 完整高度）
-        right_wrap = QWidget()
-        right_layout = QVBoxLayout(right_wrap)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(4)
-        right_layout.addWidget(QLabel('日志:'))
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.log_area.setObjectName('logArea')
-        # 不再 setFixedHeight(80)：随 bottom 的 180px 整体高度伸缩
-        right_layout.addWidget(self.log_area, 1)
-
-        bottom_layout.addWidget(left_wrap, 0)
-        bottom_layout.addWidget(right_wrap, 1)
-
-        # 外层：上方滚动区 + 下方常驻执行栏
-        wrap = QVBoxLayout(self)
-        wrap.setContentsMargins(0, 0, 0, 0)
-        wrap.setSpacing(0)
-        wrap.addWidget(self._scroll, 1)
-        wrap.addWidget(bottom, 0)
+        return self._scroll
 
     def _set_table_col(self, col, checked):
         """批量勾选/取消机组表格中指定列的所有项。"""
@@ -887,10 +804,10 @@ class WindFarmStatsPanel(QWidget):
 
         # 清空日志与进度
         self.log_area.clear()
-        self.progress_bar.setValue(0)
-        self.start_btn.setEnabled(False)
-        self.start_btn.setText('运行中...')
-        self.open_output_btn.setEnabled(False)   # 运行中禁用，避免误点
+        self.progress.setValue(0)
+        self.run_btn.setEnabled(False)
+        self.run_btn.setText('运行中...')
+        self.open_btn.setEnabled(False)   # 运行中禁用，避免误点
         mode_str = '月度湍流表' if is_monthly_ti else '秒级原始数据'
         self._log(f'模式: {mode_str}')
         self._log(f'输入: {self.data_dir}')
@@ -925,24 +842,24 @@ class WindFarmStatsPanel(QWidget):
 
     def _on_progress(self, percent, msg):
         if percent >= 0:
-            self.progress_bar.setValue(percent)
+            self.progress.setValue(percent)
         self._log(msg)
 
     def _on_finished(self):
-        self.start_btn.setEnabled(True)
-        self.start_btn.setText('开始统计')
+        self.run_btn.setEnabled(True)
+        self.run_btn.setText('开始统计')
         result = self.worker.result
         if result and result.get('error'):
             self._log(f'[错误] {result["error"]}')
             QMessageBox.critical(self, '错误', result['error'])
-            self.open_output_btn.setEnabled(False)
+            self.open_btn.setEnabled(False)
         else:
             self._log('=== 完成 ===')
             self._log(f"生成图表: {result['plots']} 张")
             self._log(f"Excel: {result['excel']}")
             # 成功后启用「打开输出」，让用户能一键跳到结果目录
-            self.open_output_btn.setEnabled(True)
-            self.open_output_btn.setToolTip(
+            self.open_btn.setEnabled(True)
+            self.open_btn.setToolTip(
                 f'在系统资源管理器中打开：\n{self.out_dir}'
             )
 

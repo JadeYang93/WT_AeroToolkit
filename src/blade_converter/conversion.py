@@ -270,24 +270,71 @@ def blade_db_to_focus2blade_wisdem(blade_db_file, output_file, mac_file):
 
 
 def _extract_pitch_data_from_mac(mac_file):
-    """从mac文件中提取DEF SHAPE数据"""
+    """从 mac 文件提取每个展向位置的变桨中心（pitch axis X）。
+
+    解析逻辑参考 ``txt_excel.py`` 的 mac 解析（鲁棒版）：
+
+    1. 扫所有 ``DEF SHAPE <name> <cx> <cy>`` → 建立 ``{shape_name: (cx, cy)}`` 映射
+    2. 扫所有 ``PLACE SHAPE <name> <zpos>`` → 用 name 反查 cx，得到 ``{zpos: cx}``
+
+    老版本用 ``DEF SHAPE <name> <number>`` 正则 + 从 shape 名称里抽数字当 zpos ——
+    shape 名不一定含位置信息（如 ``airfoil_001``），命中失败时整个转换流就废了。
+
+    Args:
+        mac_file: mac 文件路径
+
+    Returns:
+        dict[float, float] | None: ``{zpos_in_m: pitch_axis_x}``，按 zpos 单调；
+        失败返回 ``None``。
+    """
     try:
-        pitch_data = {}
-
         with open(mac_file, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+            lines = f.readlines()
 
-        pattern = r'DEF\s+SHAPE\s+(\S+)\s+([\d.]+)'
-        matches = re.findall(pattern, content, re.IGNORECASE)
+        # Step 1: 收集所有 DEF SHAPE 的 (cx, cy)
+        shape_centers = {}
+        for line in lines:
+            s = line.strip()
+            if not s.startswith('DEF SHAPE'):
+                continue
+            parts = re.split(r'\s+', s)
+            # 期望格式: 'DEF SHAPE <name> <cx> <cy>'
+            if len(parts) < 5:
+                continue
+            name = parts[2]
+            cx_raw, cy_raw = parts[3], parts[4]
+            try:
+                cx = float(cx_raw)
+            except (ValueError, TypeError):
+                # cx 非数字（极少见，可能是占位符）→ 跳过该 shape
+                continue
+            shape_centers[name] = (cx, cy_raw)
 
-        for match in matches:
-            shape_name = match[0]
-            pitch_position = float(match[1])
+        if not shape_centers:
+            return None
 
-            position_match = re.search(r'[\d.]+', shape_name)
-            if position_match:
-                position_m = float(position_match.group())
-                pitch_data[position_m] = pitch_position
+        # Step 2: 收集 PLACE SHAPE，关联 shape 中心得到 {zpos: cx}
+        pitch_data = {}
+        for line in lines:
+            s = line.strip()
+            if not s.startswith('PLACE SHAPE'):
+                continue
+            parts = re.split(r'\s+', s)
+            # 期望格式: 'PLACE SHAPE <name> <zpos>'
+            if len(parts) < 4:
+                continue
+            shape_name = parts[2]
+            zpos_raw = parts[3]
+            try:
+                zpos = float(zpos_raw)
+            except (ValueError, TypeError):
+                continue
+            if shape_name not in shape_centers:
+                # PLACE 引用了未定义的 shape —— 跳过
+                continue
+            cx, _cy = shape_centers[shape_name]
+            # 同一 zpos 多次出现时，后写覆盖先写（mac 通常不会重复）
+            pitch_data[zpos] = cx
 
         if not pitch_data:
             return None

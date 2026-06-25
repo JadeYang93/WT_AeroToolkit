@@ -52,3 +52,35 @@ def migrate_legacy_paths(modules):
                 os.makedirs(os.path.join(OUTPUT_BASE, out_sub), exist_ok=True)
             except OSError as e:
                 print(f'[migration] {module_id}: output mkdir failed: {e}')
+
+
+def migrate_extras_between_modules(src_module, dst_module, key):
+    """跨模块一次性 extras 迁移。
+
+    若 .paths.json 已存在（非首启场景），且 dst_module 的 extra ``key`` 为空、
+    src_module 有值，则把值复制过去。用于模块拆分时把 extras 跟着业务迁走，
+    不让用户重复配置。
+
+    Args:
+        src_module: 源模块 id（如 ``'blade_converter'``）
+        dst_module: 目标模块 id（如 ``'focus6_solver'``）
+        key: extras 字段名（如 ``'modules_path'``）
+    """
+    import json
+    if not os.path.exists(CONFIG_PATH):
+        return
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    src_v = (data.get(src_module, {}) or {}).get('extras', {}).get(key, '')
+    dst_v = (data.get(dst_module, {}) or {}).get('extras', {}).get(key, '')
+    if src_v and not dst_v:
+        data.setdefault(dst_module, {}).setdefault('extras', {})[key] = src_v
+        try:
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            print(f'[migration] copied {key}: {src_module} → {dst_module}')
+        except OSError as e:
+            print(f'[migration] extras copy failed: {e}')
