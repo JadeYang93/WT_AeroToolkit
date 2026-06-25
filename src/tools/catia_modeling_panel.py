@@ -58,6 +58,7 @@ class CatiaModelingPanel(BaseModulePanel):
     # ============================================================
     def _build_body(self, outer_layout):
         body = QWidget()
+        body.setObjectName('catiaBody')
         bl = QVBoxLayout(body)
         bl.setContentsMargins(16, 12, 16, 12)
         bl.setSpacing(12)
@@ -74,43 +75,54 @@ class CatiaModelingPanel(BaseModulePanel):
         self.tabs.addTab(self._build_loft_tab(), '③ 生成曲面')
         self.tabs.tabBar().setExpanding(True)       # 页签等分铺满整个栏宽
         self.tabs.tabBar().setDrawBase(False)       # 去掉页签底部那条粗基线
-        self.tabs.setStyleSheet(self._tab_qss())
+        self.tabs.setStyleSheet(self._panel_qss())
         bl.addWidget(self.tabs, 1)
+
+        # 高级参数卡片用浅灰左边条/灰徽章，与核心卡片(深蓝，全局 QSS)区分
+        body.setStyleSheet(self._panel_qss())
 
         outer_layout.addWidget(body, 1)
 
-    def _tab_qss(self):
-        """Tab 页签样式：铺满栏宽 + 大字号，未选浅底灰字、选中白底深字 + 天蓝底部色条。
+    def _panel_qss(self):
+        """面板级样式: Tab 纯蓝风格 + 高级卡片浅灰边条覆盖。
 
-        配合 tabBar().setExpanding(True)，三个页签等分铺满整个栏宽，
-        不再缩在左侧，视觉上醒目饱满。
+        Tab 遵循全局纯蓝色风格（深钢蓝底 + 选中天蓝实心，对齐导航栏），
+        三个页签等分铺满栏宽。高级参数 GroupBox(#gb_adv) 覆盖全局深蓝边条，
+        改用浅灰边条 + 灰徽章，与核心卡片(#gb_core 全局深蓝)形成主次区分。
         """
         return """
-        QTabBar { background: #e2e8f0; }
+        QTabBar { background: #1e3a5f; }
         QTabBar::tab {
-            background: #cbd5e1;
-            color: #475569;
+            background: #1e3a5f;
+            color: #94a3b8;
             font-size: 14px;
             font-weight: 600;
             padding: 16px 28px;
             margin: 0;
             border: none;
-            border-top-left-radius: 10px;
-            border-top-right-radius: 10px;
+            border-left: 1px solid #2d4a6f;
         }
+        QTabBar::tab:first { border-left: none; }
         QTabBar::tab:selected {
-            background: #ffffff;
-            color: #0ea5e9;
-            border-bottom: 4px solid #0ea5e9;
+            background: #0ea5e9;
+            color: #ffffff;
+            font-weight: bold;
         }
         QTabBar::tab:hover:!selected {
-            background: #dde3ea;
-            color: #1e3a5f;
+            background: #234870;
+            color: #ffffff;
         }
         QTabWidget::pane {
             border: 1px solid #e5e7eb;
             border-top: none;
             background: #ffffff;
+        }
+        /* 高级参数卡片: 浅灰左边条 + 灰徽章（覆盖全局 QGroupBox 的深蓝边条）*/
+        QGroupBox#gb_adv {
+            border-left: 4px solid #94a3b8;
+        }
+        QGroupBox#gb_adv::title {
+            background-color: #64748b;
         }
         """
 
@@ -167,21 +179,46 @@ class CatiaModelingPanel(BaseModulePanel):
         return w
 
     def _row(self, label, *widgets):
-        """生成 (QLabel, [widgets...]) 横排的 QHBoxLayout 容器。
+        """生成参数行: 标签右对齐(固定宽) + 控件，横排容器。
 
-        垂直 sizePolicy 设为 Fixed：防止在 QVBoxLayout / ScrollArea 中被
-        拉伸占满高度，确保折叠区展开/收起时上方各行位置不动（顶对齐）。
+        标签固定 84px 右对齐，使核心/高级栏内各行标签成一列、控件成一列，
+        整齐对齐（HTML demo 风格）。垂直 sizePolicy Fixed 防止被拉伸。
         """
         row = QWidget()
         row.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSizeConstraint(QLayout.SetFixedSize)
-        rl.addWidget(QLabel(label))
+        rl.setSpacing(8)
+        lab = QLabel(label)
+        lab.setFixedWidth(84)
+        lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lab.setStyleSheet('color: #4b5563; font-size: 12px;')
+        rl.addWidget(lab)
         for w in widgets:
-            rl.addWidget(w)
-        rl.addStretch()
+            rl.addWidget(w, 1)
         return row
+
+    def _subgroup(self, title, rows):
+        """几何集名等子组: 顶部虚线分隔 + 小标题 + 若干行。
+
+        用于高级参数卡片里把几何集名与数值参数视觉分组（HTML demo 风格）。
+        """
+        wrap = QWidget()
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        vl = QVBoxLayout(wrap)
+        vl.setContentsMargins(0, 8, 0, 0)
+        vl.setSpacing(6)
+        # 顶部虚线分隔
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet('color: #e5e7eb; border-style: dashed;')
+        vl.addWidget(sep)
+        head = QLabel(title)
+        head.setStyleSheet('color: #9ca3af; font-size: 11px; font-weight: bold;')
+        vl.addWidget(head)
+        for r in rows:
+            vl.addWidget(r)
+        return wrap
 
     # ============================================================
     # 各步骤参数区构建（核心左 / 高级右 两栏并排，无折叠）
@@ -200,41 +237,44 @@ class CatiaModelingPanel(BaseModulePanel):
         gl.setSpacing(6)
         return wrap, gl
 
-    def _column(self, title, rows):
-        """构建单栏: 标题 QLabel + 若干参数行，顶对齐。
+    def _column(self, title, rows, primary=True):
+        """构建单栏: QGroupBox 白卡片 + 徽章标题 + 参数行，顶对齐。
+
+        用 QGroupBox 复用全局 QSS 的白卡片样式（白底 + 左边条 + 徽章标题）。
+        核心/高级通过 primary 参数切换 objectName 控制左边条颜色:
+            primary=True  → 深钢蓝左边条（gb_core）
+            primary=False → 浅灰左边条（gb_adv）
 
         Args:
-            title: 栏标题（如 '核心参数' / '高级参数'）
+            title: 栏标题（'核心参数' / '高级参数'）
             rows: 参数行 QWidget 列表（由 _row() 生成）
-        返回栏容器 QWidget。各栏内 QVBoxLayout 顶对齐 + 底部 stretch，
-        确保参数行不被拉伸、栏间高度差异不影响左侧顶对齐。
+            primary: 是否核心栏
+        返回 GroupBox 控件。
         """
-        col = QWidget()
-        col.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        cl = QVBoxLayout(col)
-        cl.setContentsMargins(0, 0, 0, 0)
+        gb = QGroupBox(title)
+        gb.setObjectName('gb_core' if primary else 'gb_adv')
+        gb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        cl = QVBoxLayout(gb)
+        cl.setContentsMargins(12, 16, 10, 8)
         cl.setSpacing(6)
-        head = QLabel(title)
-        head.setStyleSheet('color: #6b7280; font-size: 11px; font-weight: bold;')
-        cl.addWidget(head)
         for r in rows:
             cl.addWidget(r)
         cl.addStretch()
-        return col
+        return gb
 
     def _build_two_column_params(self, core_rows, adv_rows):
-        """核心参数（左） + 高级参数（右）并排两栏布局。
+        """核心参数（左，深蓝左边条） + 高级参数（右，浅灰左边条）并排两栏。
 
-        充分利用水平空间，核心/高级始终并排显示（无折叠）。
-        两栏顶部对齐，各自内容顶对齐，互不影响。
+        两栏均为白卡片 GroupBox，复用全局 QSS；布局按 HTML demo 风格
+        充分利用水平空间，始终并排显示。
         """
         wrap = QWidget()
         wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         h = QHBoxLayout(wrap)
         h.setContentsMargins(0, 6, 0, 6)
-        h.setSpacing(24)
-        h.addWidget(self._column('核心参数', core_rows), 1)
-        h.addWidget(self._column('高级参数', adv_rows), 1)
+        h.setSpacing(18)
+        h.addWidget(self._column('核心参数', core_rows, primary=True), 1)
+        h.addWidget(self._column('高级参数', adv_rows, primary=False), 1)
         return wrap
 
     def _build_sections_params(self):
@@ -255,11 +295,13 @@ class CatiaModelingPanel(BaseModulePanel):
             self._row('尾缘点2', self._spin('sec.te_point399_num', 1, 99999, 399)),
             self._row('相切阈值', self._spin('sec.tangency_threshold', 0, 99, 0.5, is_double=True)),
             self._row('校正模式', self._spin('sec.correction_mode', 0, 9, 3)),
-            self._row('样条集', self._line('sec.spline_set', 'Z_Splines')),
-            self._row('光顺集', self._line('sec.smooth_set', 'Z_Smooths')),
-            self._row('平面集', self._line('sec.plane_set', 'Z_Planes')),
-            self._row('边缘集', self._line('sec.edge_set', 'Z_Edges')),
-            self._row('尾缘集', self._line('sec.te_set', 'Z_TrailingEdges')),
+            self._subgroup('输出几何集', [
+                self._row('样条集', self._line('sec.spline_set', 'Z_Splines')),
+                self._row('光顺集', self._line('sec.smooth_set', 'Z_Smooths')),
+                self._row('平面集', self._line('sec.plane_set', 'Z_Planes')),
+                self._row('边缘集', self._line('sec.edge_set', 'Z_Edges')),
+                self._row('尾缘集', self._line('sec.te_set', 'Z_TrailingEdges')),
+            ]),
         ]
         return self._build_two_column_params(core, adv)
 
@@ -273,9 +315,11 @@ class CatiaModelingPanel(BaseModulePanel):
         adv = [
             self._row('相切阈值', self._spin('res.tangency_threshold', 0, 99, 0.5, is_double=True)),
             self._row('校正模式', self._spin('res.correction_mode', 0, 9, 3)),
-            self._row('点集', self._line('res.point_set', 'Z_ResamplePoints')),
-            self._row('原始样条集', self._line('res.original_set', 'Z_OriginalSpline')),
-            self._row('光顺集', self._line('res.smooth_set', 'Z_ResampleSmooth')),
+            self._subgroup('输出几何集', [
+                self._row('点集', self._line('res.point_set', 'Z_ResamplePoints')),
+                self._row('原始样条集', self._line('res.original_set', 'Z_OriginalSpline')),
+                self._row('光顺集', self._line('res.smooth_set', 'Z_ResampleSmooth')),
+            ]),
         ]
         return self._build_two_column_params(core, adv)
 
