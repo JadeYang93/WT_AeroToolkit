@@ -16,7 +16,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFrame, QLayout,
     QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QAbstractSpinBox,
-    QCheckBox, QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox,
     QScrollArea, QTabWidget, QProgressBar, QTextEdit, QSizePolicy,
 )
 
@@ -143,21 +143,8 @@ class CatiaModelingPanel(BaseModulePanel):
         rl.addStretch()
         return row
 
-    def _advanced_toggle(self, group_layout, advanced_frame, group_key):
-        """在 GroupBox 底部加高级参数折叠勾选框。"""
-        cb = QCheckBox('⚙ 高级参数')
-        advanced_frame.setVisible(False)
-
-        def _toggle(state):
-            advanced_frame.setVisible(bool(state))
-
-        cb.stateChanged.connect(_toggle)
-        self._param_widgets[f'_advanced_{group_key}'] = cb
-        group_layout.addWidget(cb)
-        group_layout.addWidget(advanced_frame)
-
     # ============================================================
-    # 各步骤参数区构建（内容不变，仅去掉 GroupBox 外壳改成 tab 内区）
+    # 各步骤参数区构建（核心左 / 高级右 两栏并排，无折叠）
     # ============================================================
     def _make_params_container(self):
         """创建参数区容器：垂直 Fixed，内容按需撑开，多余空间归 ScrollArea。
@@ -173,67 +160,96 @@ class CatiaModelingPanel(BaseModulePanel):
         gl.setSpacing(6)
         return wrap, gl
 
+    def _column(self, title, rows):
+        """构建单栏: 标题 QLabel + 若干参数行，顶对齐。
+
+        Args:
+            title: 栏标题（如 '核心参数' / '高级参数'）
+            rows: 参数行 QWidget 列表（由 _row() 生成）
+        返回栏容器 QWidget。各栏内 QVBoxLayout 顶对齐 + 底部 stretch，
+        确保参数行不被拉伸、栏间高度差异不影响左侧顶对齐。
+        """
+        col = QWidget()
+        col.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        cl = QVBoxLayout(col)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(6)
+        head = QLabel(title)
+        head.setStyleSheet('color: #6b7280; font-size: 11px; font-weight: bold;')
+        cl.addWidget(head)
+        for r in rows:
+            cl.addWidget(r)
+        cl.addStretch()
+        return col
+
+    def _build_two_column_params(self, core_rows, adv_rows):
+        """核心参数（左） + 高级参数（右）并排两栏布局。
+
+        充分利用水平空间，核心/高级始终并排显示（无折叠）。
+        两栏顶部对齐，各自内容顶对齐，互不影响。
+        """
+        wrap = QWidget()
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 6, 0, 6)
+        h.setSpacing(24)
+        h.addWidget(self._column('核心参数', core_rows), 1)
+        h.addWidget(self._column('高级参数', adv_rows), 1)
+        return wrap
+
     def _build_sections_params(self):
-        """① 构建截面参数区。"""
-        wrap, gl = self._make_params_container()
-        # 核心
-        gl.addWidget(self._row('截面数', self._spin('sec.num_groups', 1, 9999, 96)))
-        gl.addWidget(self._row('起始组号', self._spin('sec.start_group', 1, 9999, 1)))
+        """① 构建截面参数区。核心左、高级右，两栏并排。"""
         t1 = self._spin('sec.smooth_t1', 0, 9999, 4)
         t2 = self._spin('sec.smooth_t2', 0, 9999, 3)
         t3 = self._spin('sec.smooth_t3', 0, 9999, 2)
         t4 = self._spin('sec.smooth_t4', 0, 9999, 1)
-        gl.addWidget(self._row('四段光顺阈值', t1, t2, t3, t4))
-        # 高级
-        adv = QWidget()
-        al = QVBoxLayout(adv)
-        al.setContentsMargins(0, 0, 0, 0)
-        al.setSpacing(4)
-        al.addWidget(self._row('点数上限', self._spin('sec.points_per_section', 2, 99999, 400)))
-        al.addWidget(self._row('前缘点序号', self._spin('sec.le_point_num', 1, 99999, 200)))
-        al.addWidget(self._row('尾缘点1', self._spin('sec.te_point1_num', 1, 99999, 1)))
-        al.addWidget(self._row('尾缘点2', self._spin('sec.te_point399_num', 1, 99999, 399)))
-        al.addWidget(self._row('相切阈值', self._spin('sec.tangency_threshold', 0, 99, 0.5, is_double=True)))
-        al.addWidget(self._row('校正模式', self._spin('sec.correction_mode', 0, 9, 3)))
-        al.addWidget(self._row('样条集', self._line('sec.spline_set', 'Z_Splines')))
-        al.addWidget(self._row('光顺集', self._line('sec.smooth_set', 'Z_Smooths')))
-        al.addWidget(self._row('平面集', self._line('sec.plane_set', 'Z_Planes')))
-        al.addWidget(self._row('边缘集', self._line('sec.edge_set', 'Z_Edges')))
-        al.addWidget(self._row('尾缘集', self._line('sec.te_set', 'Z_TrailingEdges')))
-        self._advanced_toggle(gl, adv, 'sections')
-        return wrap
+        core = [
+            self._row('截面数', self._spin('sec.num_groups', 1, 9999, 96)),
+            self._row('起始组号', self._spin('sec.start_group', 1, 9999, 1)),
+            self._row('四段光顺阈值', t1, t2, t3, t4),
+        ]
+        adv = [
+            self._row('点数上限', self._spin('sec.points_per_section', 2, 99999, 400)),
+            self._row('前缘点序号', self._spin('sec.le_point_num', 1, 99999, 200)),
+            self._row('尾缘点1', self._spin('sec.te_point1_num', 1, 99999, 1)),
+            self._row('尾缘点2', self._spin('sec.te_point399_num', 1, 99999, 399)),
+            self._row('相切阈值', self._spin('sec.tangency_threshold', 0, 99, 0.5, is_double=True)),
+            self._row('校正模式', self._spin('sec.correction_mode', 0, 9, 3)),
+            self._row('样条集', self._line('sec.spline_set', 'Z_Splines')),
+            self._row('光顺集', self._line('sec.smooth_set', 'Z_Smooths')),
+            self._row('平面集', self._line('sec.plane_set', 'Z_Planes')),
+            self._row('边缘集', self._line('sec.edge_set', 'Z_Edges')),
+            self._row('尾缘集', self._line('sec.te_set', 'Z_TrailingEdges')),
+        ]
+        return self._build_two_column_params(core, adv)
 
     def _build_resample_params(self):
-        """② 重采样光顺参数区。"""
-        wrap, gl = self._make_params_container()
-        gl.addWidget(self._row('源样条集', self._line('res.source_set', 'Z_Smooths')))
-        gl.addWidget(self._row('重采样点数', self._spin('res.num_points', 2, 99999, 149)))
-        gl.addWidget(self._row('光顺偏差阈值', self._spin('res.smooth_max_deviation', 0, 9999, 1.0, is_double=True)))
-        adv = QWidget()
-        al = QVBoxLayout(adv)
-        al.setContentsMargins(0, 0, 0, 0)
-        al.setSpacing(4)
-        al.addWidget(self._row('相切阈值', self._spin('res.tangency_threshold', 0, 99, 0.5, is_double=True)))
-        al.addWidget(self._row('校正模式', self._spin('res.correction_mode', 0, 9, 3)))
-        al.addWidget(self._row('点集', self._line('res.point_set', 'Z_ResamplePoints')))
-        al.addWidget(self._row('原始样条集', self._line('res.original_set', 'Z_OriginalSpline')))
-        al.addWidget(self._row('光顺集', self._line('res.smooth_set', 'Z_ResampleSmooth')))
-        self._advanced_toggle(gl, adv, 'resample')
-        return wrap
+        """② 重采样光顺参数区。核心左、高级右，两栏并排。"""
+        core = [
+            self._row('源样条集', self._line('res.source_set', 'Z_Smooths')),
+            self._row('重采样点数', self._spin('res.num_points', 2, 99999, 149)),
+            self._row('光顺偏差阈值', self._spin('res.smooth_max_deviation', 0, 9999, 1.0, is_double=True)),
+        ]
+        adv = [
+            self._row('相切阈值', self._spin('res.tangency_threshold', 0, 99, 0.5, is_double=True)),
+            self._row('校正模式', self._spin('res.correction_mode', 0, 9, 3)),
+            self._row('点集', self._line('res.point_set', 'Z_ResamplePoints')),
+            self._row('原始样条集', self._line('res.original_set', 'Z_OriginalSpline')),
+            self._row('光顺集', self._line('res.smooth_set', 'Z_ResampleSmooth')),
+        ]
+        return self._build_two_column_params(core, adv)
 
     def _build_loft_params(self):
-        """③ 生成曲面参数区。"""
-        wrap, gl = self._make_params_container()
-        gl.addWidget(self._row('源曲线集', self._line('loft.source_set', 'Z_ResampleSmooth')))
-        gl.addWidget(self._row('截面耦合方式', self._spin('loft.section_coupling', 0, 2, 1)))
-        adv = QWidget()
-        al = QVBoxLayout(adv)
-        al.setContentsMargins(0, 0, 0, 0)
-        al.setSpacing(4)
-        al.addWidget(self._row('重新限定', self._spin('loft.relimitation', 0, 1, 1)))
-        al.addWidget(self._row('规范检测', self._spin('loft.canonical_detection', 0, 2, 2)))
-        self._advanced_toggle(gl, adv, 'loft')
-        return wrap
+        """③ 生成曲面参数区。核心左、高级右，两栏并排。"""
+        core = [
+            self._row('源曲线集', self._line('loft.source_set', 'Z_ResampleSmooth')),
+            self._row('截面耦合方式', self._spin('loft.section_coupling', 0, 2, 1)),
+        ]
+        adv = [
+            self._row('重新限定', self._spin('loft.relimitation', 0, 1, 1)),
+            self._row('规范检测', self._spin('loft.canonical_detection', 0, 2, 2)),
+        ]
+        return self._build_two_column_params(core, adv)
 
     # ============================================================
     # 各 Tab 构建：参数区（滚动） + 独立执行栏
@@ -409,11 +425,6 @@ class CatiaModelingPanel(BaseModulePanel):
                 'canonical_detection': self._param_widgets['loft.canonical_detection'].value(),
             },
             'input': {'stp_path': self._stp_edit.text()},
-            'ui': {
-                'advanced_expanded_sections': self._param_widgets['_advanced_sections'].isChecked(),
-                'advanced_expanded_resample': self._param_widgets['_advanced_resample'].isChecked(),
-                'advanced_expanded_loft': self._param_widgets['_advanced_loft'].isChecked(),
-            },
         }
 
     def _load_params_to_ui(self):
@@ -450,11 +461,6 @@ class CatiaModelingPanel(BaseModulePanel):
         w['loft.relimitation'].setValue(l['relimitation'])
         w['loft.canonical_detection'].setValue(l['canonical_detection'])
         self._stp_edit.setText(p.get('input', {}).get('stp_path', ''))
-        # 高级展开态
-        adv = p.get('ui', {})
-        w['_advanced_sections'].setChecked(adv.get('advanced_expanded_sections', False))
-        w['_advanced_resample'].setChecked(adv.get('advanced_expanded_resample', False))
-        w['_advanced_loft'].setChecked(adv.get('advanced_expanded_loft', False))
 
     # ============================================================
     # 运行编排（按 step_key 区分，每步独立 Worker + 日志）

@@ -49,9 +49,6 @@ DEFAULTS = {
     'input': {
         'stp_path': '',
     },
-    'ui': {
-        'advanced_expanded': False,
-    },
 }
 
 
