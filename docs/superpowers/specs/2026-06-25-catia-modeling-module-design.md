@@ -50,6 +50,8 @@ Sect{sec+1}_{point+1}   （1-based，如 Sect1_1, Sect1_2 ... Sect96_399）
 | 三步呈现 | 三个独立单步按钮 | 用户自主决定跑哪步、对哪个文档跑；不强制一键顺序 |
 | 输入文件管理 | 文件选择框，默认指向 STAGE-3 输出 | 默认 `输出/shape_design/stage3/CATIA/3D_points.stp`，可手动改 |
 | 代码组织 | 方案 A：子包 + 纯函数 | 与 `shape_design/`、`focus6_solver/` 等现有 8 个模块结构一致 |
+| 参数暴露 | 核心参数直露 + 高级参数折叠 | 每步 GroupBox 直露 3~4 个核心参数；勾选「高级参数」展开后可调全部 24 个 |
+| 参数持久化 | 记住上次值（独立 JSON） | 调过的参数写入 `配置/catia_modeling_params.json`，下次打开自动恢复 |
 
 ## 3. 架构设计
 
@@ -63,9 +65,10 @@ src/
 ├── catia_modeling/                  # 新增业务子包
 │   ├── __init__.py                  # 导出公共 API
 │   ├── context.py                   # CatiaContext：连接 + 文档句柄封装
-│   ├── sections.py                  # build_sections() —— 对应 Pre-process.py
-│   ├── resample.py                  # resample_and_smooth() —— 对应 1227-2opt.py
-│   ├── loft.py                      # build_loft_surface() —— 对应 lin2surface.py
+│   ├── sections.py                  # build_sections() + SectionParams
+│   ├── resample.py                  # resample_and_smooth() + ResampleParams
+│   ├── loft.py                      # build_loft_surface() + LoftParams
+│   ├── params_store.py              # load_params()/save_params() 参数持久化
 │   └── exceptions.py                # CatiaNotRunningError / NoActiveDocumentError 等
 └── tools/
     └── catia_modeling_panel.py      # 新增 UI 面板（继承 BaseWorkerPanel）
@@ -171,19 +174,121 @@ def build_loft_surface(ctx, params: LoftParams, progress_callback=None) -> dict:
 
 ### 3.5 参数化（硬编码 → 可调）
 
-参考脚本的硬编码全部参数化，默认值取脚本原值，UI 暴露最常用的几个：
+参考脚本共有 **24 个可配置参数**。采用「核心直露 + 高级折叠」分层：每个步骤的 GroupBox 顶部直接摆放 3~4 个核心参数；GroupBox 底部一个「⚙ 高级参数」勾选框，勾选后展开剩余参数。所有参数**记住上次值**（见 3.7）。
 
-| 参数 | 来源脚本 | 默认值 | UI 是否暴露 |
-|---|---|---|---|
-| 截面数 `num_groups` | Pre-process | 96 | ✅ |
-| 起始组号 `start_group` | Pre-process | 1 | ✅ |
-| 光顺阈值 `smooth_thresholds` | Pre-process | (4,3,2,1) | ✅（四段） |
-| 重采样点数 `num_points` | 1227-2opt | 149 | ✅ |
-| 光顺阈值（重采样） | 1227-2opt | 1.0 | ✅ |
-| 源几何集名（重采样）`source_set` | 1227-2opt | `line` | ✅ |
-| 源几何集名（蒙皮）`source_set` | lin2surface | `Z_Smooths` | ✅ |
+#### 步骤 ① 构建截面（对应 Pre-process.py）
 
-### 3.6 数据流
+| 参数 | 字段名 | 默认 | 层级 | 含义 |
+|---|---|---|---|---|
+| 截面数 | `num_groups` | 96 | 核心 | 截面总数 |
+| 起始组号 | `start_group` | 1 | 核心 | 起始组号（可只跑某段） |
+| 四段光顺阈值 | `smooth_thresholds` | (4,3,2,1) | 核心 | 前1/4、中两段、后1/4 各段阈值 |
+| 每截面点数上限 | `points_per_section` | 400 | 高级 | 点序号遍历上限 `range(1, 400)` |
+| 前缘点序号 | `le_point_num` | 200 | 高级 | 取作前缘的点序号 |
+| 尾缘点1序号 | `te_point1_num` | 1 | 高级 | 取作尾缘的左点序号 |
+| 尾缘点2序号 | `te_point399_num` | 399 | 高级 | 取作尾缘的右点序号 |
+| 相切阈值 | `tangency_threshold` | 0.5 | 高级 | `SetTangencyThreshold`（全截面共用） |
+| 校正模式 | `correction_mode` | 3 | 高级 | `CorrectionMode` |
+| 样条输出集名 | `spline_set` | `Z_Splines` | 高级 | 样条输出几何集 |
+| 光顺输出集名 | `smooth_set` | `Z_Smooths` | 高级 | 光顺曲线几何集 |
+| 平面输出集名 | `plane_set` | `Z_Planes` | 高级 | 平面几何集 |
+| 边缘输出集名 | `edge_set` | `Z_Edges` | 高级 | 前缘点+弦线几何集 |
+| 尾缘输出集名 | `te_set` | `Z_TrailingEdges` | 高级 | 尾缘点几何集 |
+
+#### 步骤 ② 重采样光顺（对应 1227-2opt.py）
+
+| 参数 | 字段名 | 默认 | 层级 | 含义 |
+|---|---|---|---|---|
+| 源样条集名 | `source_set` | `line` | 核心 | 从哪个几何集读样条 |
+| 重采样点数 | `num_points` | 149 | 核心 | 每条曲线等距重采样点数 |
+| 光顺偏差阈值 | `smooth_max_deviation` | 1.0 | 核心 | `SetMaximumDeviation` |
+| 相切阈值 | `tangency_threshold` | 0.5 | 高级 | `SetTangencyThreshold` |
+| 校正模式 | `correction_mode` | 3 | 高级 | `CorrectionMode` |
+| 点集输出集名 | `point_set` | `点集` | 高级 | 重采样点几何集 |
+| 原始样条集名 | `original_set` | `OriginalSplines` | 高级 | 重采样后原始样条几何集 |
+| 光顺输出集名 | `smooth_set` | `Smoothed1` | 高级 | 光顺曲线几何集 |
+
+#### 步骤 ③ 生成曲面（对应 lin2surface.py）
+
+| 参数 | 字段名 | 默认 | 层级 | 含义 |
+|---|---|---|---|---|
+| 源曲线集名 | `source_set` | `Z_Smooths` | 核心 | 从哪个几何集读截面曲线 |
+| 截面耦合方式 | `section_coupling` | 1 | 核心 | `SectionCoupling` |
+| 重新限定 | `relimitation` | 1 | 高级 | `Relimitation` |
+| 规范检测 | `canonical_detection` | 2 | 高级 | `CanonicalDetection` |
+
+> 共 14 + 8 + 4 = 26 行（其中含 2 个枚举说明），实际参数字段 24 个。核心参数 3+3+2 = 8 个直露，高级参数 16 个折叠。
+
+### 3.6 参数校验
+
+参数对象（`SectionParams` / `ResampleParams` / `LoftParams`，dataclass）构造时做基本校验：
+
+- 数值范围：`num_groups >= 1`、`num_points >= 2`、阈值 `>= 0`、点序号 `>= 1`
+- 四段阈值：长度必须为 4（否则无法分段）
+- 几何集名：非空字符串（CATIA 对中英文名都兼容）
+
+校验失败在 UI 层拦截（点运行时 `QMessageBox.warning`），不进入 Worker。
+
+### 3.7 参数持久化（记住上次值）
+
+项目现有的 `ConfigCenter` 是为**路径型字段**设计的（带路径校验、相对/绝对转换，见 `global_config.py:215 set_extra`），用它存数值参数（阈值 0.5、点数 149、数组 (4,3,2,1)）会触发路径校验报错。项目里也无现成的数值参数持久化先例（curve_fitter 等参数都是每次用默认值）。
+
+因此 CATIA 模块新建一个**独立轻量存储**：
+
+```
+配置/catia_modeling_params.json
+```
+
+格式（按步骤分组，扁平 key-value）：
+
+```json
+{
+  "sections": {
+    "num_groups": 96,
+    "start_group": 1,
+    "smooth_thresholds": [4, 3, 2, 1],
+    "points_per_section": 400,
+    "le_point_num": 200,
+    "te_point1_num": 1,
+    "te_point399_num": 399,
+    "tangency_threshold": 0.5,
+    "correction_mode": 3,
+    "spline_set": "Z_Splines",
+    "smooth_set": "Z_Smooths",
+    "plane_set": "Z_Planes",
+    "edge_set": "Z_Edges",
+    "te_set": "Z_TrailingEdges"
+  },
+  "resample": {
+    "source_set": "line",
+    "num_points": 149,
+    "smooth_max_deviation": 1.0,
+    "tangency_threshold": 0.5,
+    "correction_mode": 3,
+    "point_set": "点集",
+    "original_set": "OriginalSplines",
+    "smooth_set": "Smoothed1"
+  },
+  "loft": {
+    "source_set": "Z_Smooths",
+    "section_coupling": 1,
+    "relimitation": 1,
+    "canonical_detection": 2
+  }
+}
+```
+
+读写职责（封装在 `catia_modeling/params_store.py`）：
+
+- `load_params() -> dict`：文件不存在或解析失败 → 返回全默认值（容错，不抛异常）
+- `save_params(params: dict)`：原子写（先写临时文件再 rename，避免中途崩溃损坏）
+- 输入文件路径（STP）也一并存入 JSON 的 `input.stp_path` 字段
+
+UI 触发时机：**运行按钮点击时**读取构造参数对象（同时若值非默认则存盘），**面板初始化时**读取回填到各控件。即「记忆的是上次成功运行的那组值」。高级折叠框的展开/收起状态也存盘（`ui.advanced_expanded` 字段），避免每次重新展开。
+
+> 放在 `配置/` 而非模块输出目录：参数是「工具配置」而非「运行产物」，与 `ConfigCenter` 的 JSON 同级、可手动编辑、可随包分发。
+
+### 3.8 数据流
 
 ```
 [叶片形状输出 STAGE-3]
@@ -209,34 +314,71 @@ def build_loft_surface(ctx, params: LoftParams, progress_callback=None) -> dict:
 
 ### 4.1 布局
 
+「核心直露 + 高级折叠」—— 每步 GroupBox 顶部直接摆核心参数，底部一个 `☐ 高级参数` 勾选框，勾选后展开 QGridLayout 容纳剩余参数。
+
 ```
 ┌─ banner：CATIA 叶片建模 / C A T I A   B L A D E   M O D E L I N G ─┐
 ├──────────────────────────────────────────────────────────────────────┤
 │ ┌ 输入文件 ──────────────────────────────────────────────────────┐ │
 │ │ STP 点云文件: [输出/shape_design/stage3/CATIA/3D_points.stp] …│ │
-│ │              （默认指向 STAGE-3，可手动改；提示：先在 CATIA    │ │
-│ │               手动导入此文件，点云需带 Sect{组}_{点} 命名）    │ │
+│ │ （提示：先在 CATIA 手动导入此文件，点云需带 Sect{组}_{点} 命名）│ │
 │ └────────────────────────────────────────────────────────────────┘ │
-│ ┌ 三个步骤（每步独立运行，按钮禁用条件见下） ───────────────────┐ │
-│ │  [① 构建截面]  截面数[96] 起始组[1] 光顺阈值[4][3][2][1]      │ │
-│ │  [② 重采样光顺] 源集[line] 点数[149] 光顺阈值[1.0]            │ │
-│ │  [③ 生成曲面]  源集[Z_Smooths]                                │ │
+│                                                                      │
+│ ┌ ① 构建截面 ────────────────────────────────────────────────────┐ │
+│ │ 截面数[ 96 ]   起始组[ 1 ]                                      │ │
+│ │ 四段光顺阈值[4][3][2][1]                                         │ │
+│ │ ☐ 高级参数                                                      │ │
+│ │   ┌─ 勾选后展开 ───────────────────────────────────────────┐  │ │
+│ │   │ 点数上限[400] 前缘点[200] 尾缘点1[1] 尾缘点2[399]       │  │ │
+│ │   │ 相切阈值[0.5] 校正模式[3]                                │  │ │
+│ │   │ 样条集[Z_Splines] 光顺集[Z_Smooths] 平面集[Z_Planes]    │  │ │
+│ │   │ 边缘集[Z_Edges] 尾缘集[Z_TrailingEdges]                 │  │ │
+│ │   └─────────────────────────────────────────────────────────┘  │ │
 │ └────────────────────────────────────────────────────────────────┘ │
-├─ 执行栏（320px 左：当前步进度 + 日志区右） ───────────────────────┤
-│ [运行当前步]  [📂打开输出目录]   日志:                            │
-│ [████████░░░░░░░░] 60%         ┌──────────────────────────────┐  │
-│                                │ [① 构建截面] 连接 CATIA...     │  │
-│                                │ 处理样条: Sect1, 长度: 3.2m   │  │
-│                                │ ...                            │  │
-│                                └──────────────────────────────┘  │
+│ ┌ ② 重采样光顺 ──────────────────────────────────────────────────┐ │
+│ │ 源样条集[ line ]  重采样点数[ 149 ]  光顺偏差阈值[ 1.0 ]       │ │
+│ │ ☐ 高级参数                                                      │ │
+│ │   ┌─ 勾选后展开 ───────────────────────────────────────────┐  │ │
+│ │   │ 相切阈值[0.5] 校正模式[3]                                │  │ │
+│ │   │ 点集[点集] 原始样条集[OriginalSplines] 光顺集[Smoothed1]│  │ │
+│ │   └─────────────────────────────────────────────────────────┘  │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│ ┌ ③ 生成曲面 ────────────────────────────────────────────────────┐ │
+│ │ 源曲线集[ Z_Smooths ]  截面耦合方式[ 1 ]                        │ │
+│ │ ☐ 高级参数                                                      │ │
+│ │   ┌─ 勾选后展开 ───────────────────────────────────────────┐  │ │
+│ │   │ 重新限定[1] 规范检测[2]                                  │  │ │
+│ │   └─────────────────────────────────────────────────────────┘  │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│ ┌ 步骤选择 + 运行 ────────────────────────────────────────────────┐ │
+│ │ 运行步骤: ◉①构建截面  ○②重采样光顺  ○③生成曲面                 │ │
+│ │ [▶ 运行当前步]  [📂 打开输出目录]                                │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+├─ 执行栏：进度条 + 日志（继承 BaseWorkerPanel） ─────────────────────┤
+│ [████████░░░░░░░░] 60%         ┌──────────────────────────────┐   │
+│                                │ [①] 连接 CATIA...              │   │
+│                                │ 处理样条: Sect1, 长度: 3.2m   │   │
+│                                │ ...                            │   │
+│                                └──────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+**控件类型约定**：
+- 整数参数（截面数、点数、点序号、模式）→ `QSpinBox`（带范围限制）
+- 浮点参数（阈值）→ `QDoubleSpinBox`（带 decimals）
+- 几何集名 → `QLineEdit`
+- 四段阈值 → 4 个 `QSpinBox` 横排
+- 高级折叠 → `QCheckBox` + 一组 `QFrame`，`stateChanged` 切 `setVisible`
+- 运行步骤选择 → `QRadioButton` 组（与三个 GroupBox 视觉对应）
 
 ### 4.2 控件与状态
 
 - **输入文件区**：`QLineEdit` + 浏览按钮 `…`。默认值从 `config_center.get_paths('shape_design')` 推导出 `<shape_design 输出>/stage3/CATIA/3D_points.stp`。该框仅作提示/记录，**实际不通过它把文件传给 CATIA**（CATIA 的 STP 导入由用户手动完成）。
-- **三个步骤按钮**：各自一组参数控件 + 一个运行按钮。点某按钮 → 跑对应步骤 → 进度/日志进入下方执行栏。
-- **执行栏**：复用 `BaseWorkerPanel._build_exec_bar()`，但运行按钮文字动态显示当前步（"运行① 构建截面"等）。
+- **三个步骤参数 GroupBox**：每个 GroupBox 顶部直接摆核心参数（SpinBox/LineEdit），底部 `☐ 高级参数` 勾选框 + 折叠区。`stateChanged` → 切折叠区 `setVisible`，并 `save_params` 记住展开状态。
+- **步骤选择 + 运行**：一组 `QRadioButton`（①②③）选中当前要运行的步骤；下方「▶ 运行当前步」按钮根据选中步骤动态切文字（"运行① 构建截面" 等）。点运行 → 读当前步参数控件值 → 构造 `SectionParams`/`ResampleParams`/`LoftParams` → 校验 → 存盘 → 启动 Worker。
+- **执行栏**：复用 `BaseWorkerPanel._build_exec_bar()`，运行按钮/进度/日志沿用基类。
+- **参数持久化回填**：面板 `__init__` 末尾调 `load_params()` 把所有控件值（含高级折叠展开态）回填，实现「记住上次值」。运行成功后 `save_params()` 存盘。
 
 ### 4.3 运行时检测
 
