@@ -609,18 +609,98 @@ class CurveFitterPanel(QWidget):
         outer.setSpacing(0)
         outer.addWidget(self._build_banner())
 
+        # v0.3.12: 左右 QSplitter —— 左 QTabWidget，右共享日志栏
+        # 两个 Tab 的所有 QMessageBox.information/warning 全部写入此日志
+        body = QSplitter(Qt.Horizontal)
+
         # 多 Tab：Tab1 全段拟合（原有）, Tab2 分段复用（C2 内外段）
         self.tabs = QTabWidget()
-        self.tabs.addTab(CurveFitterWidget(), '📈  全段拟合')
+        self.curve_widget = CurveFitterWidget(log_callback=self._log)
+        self.tabs.addTab(self.curve_widget, '📈  全段拟合')
         # 分段复用 widget 需要拿到 shape_design 的 STAGE-1 输出目录作为默认定位
         shape_paths = config_center.get_paths('shape_design')
         stage1_default_dir = os.path.join(shape_paths.get('output', ''), 'stage1')
         self.seg_widget = SegmentedFitterWidget(
             default_xlsx_dir=stage1_default_dir,
             default_output_dir=self.out_dir,
+            log_callback=self._log,
         )
         self.tabs.addTab(self.seg_widget, '✂  分段复用 (C2)')
-        outer.addWidget(self.tabs, 1)
+        body.addWidget(self.tabs)
+
+        # 日志栏（占满右侧高度，宽度可调）
+        body.addWidget(self._build_log_panel())
+        body.setStretchFactor(0, 5)
+        body.setStretchFactor(1, 2)
+        body.setSizes([900, 360])
+        outer.addWidget(body, 1)
+
+    def _build_log_panel(self):
+        """共享日志栏：QTextEdit + 「🗑 清空」按钮。
+
+        level → 颜色映射：info=黑，success=绿，warning=橙，error=红。
+        所有日志带时间戳前缀 [HH:MM:SS]。
+        """
+        box = QGroupBox('运行日志')
+        box.setObjectName('gb_data')
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(8, 4, 8, 4)
+        outer.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(QLabel('📜'))
+        tip = QLabel('解析 / 拟合 / 插值 / 保存的运行情况都写在这里（不再弹窗）')
+        tip.setStyleSheet('color: #666; font-size: 11px;')
+        head.addWidget(tip)
+        head.addStretch()
+        clear_btn = QPushButton('🗑 清空')
+        clear_btn.clicked.connect(lambda: self.log_view.clear())
+        head.addWidget(clear_btn)
+        outer.addLayout(head)
+
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setObjectName('logView')
+        self.log_view.setMinimumHeight(80)
+        # 等宽字体，对齐时间戳和级别
+        mono = QFont('Consolas')
+        mono.setStyleHint(QFont.Monospace)
+        self.log_view.setFont(mono)
+        outer.addWidget(self.log_view, 1)
+        return box
+
+    def _log(self, msg: str, level: str = 'info'):
+        """所有子 widget 通过此回调写日志。
+
+        level ∈ {'info', 'success', 'warning', 'error'}，
+        分别对应黑 / 绿 / 橙 / 红色文本。
+        """
+        colors = {
+            'info':    '#374151',
+            'success': '#15803d',
+            'warning': '#b45309',
+            'error':   '#b91c1c',
+        }
+        labels = {
+            'info':    'INFO',
+            'success': ' OK ',
+            'warning': 'WARN',
+            'error':   'ERR ',
+        }
+        ts = datetime.now().strftime('%H:%M:%S')
+        color = colors.get(level, '#374151')
+        label = labels.get(level, 'INFO')
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(f'[{ts}] [{label}] {msg}\n')
+        self.log_view.setTextCursor(cursor)
+        # 滚到底
+        sb = self.log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _build_banner(self):
         banner = QWidget()
