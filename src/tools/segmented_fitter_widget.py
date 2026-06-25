@@ -16,13 +16,13 @@ from pathlib import Path
 import numpy as np
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QTextOption
+from PyQt5.QtGui import QFont, QTextOption, QTextCursor, QTextCharFormat, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QPushButton, QLabel, QFileDialog,
     QDoubleSpinBox, QSpinBox, QMessageBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QScrollArea, QFrame, QSizePolicy, QPlainTextEdit,
+    QScrollArea, QFrame, QSizePolicy, QPlainTextEdit, QTextEdit,
 )
 
 # matplotlib 嵌入（import plotting 触发中文字体配置）
@@ -49,7 +49,8 @@ class SegmentedFitterWidget(QWidget):
         super().__init__(parent)
         self._xlsx_dir = default_xlsx_dir
         self._output_dir = default_output_dir
-        # v0.3.12: 弹窗全部改为日志写入（由 CurveFitterPanel 提供回调）
+        # v0.3.12: 弹窗改为日志写入。外部未传 callback 时用内部 _write_log（绑定时延后到 UI 创建完）
+        self._external_log = log_callback
         self._log = log_callback or (lambda msg, level='info': None)
 
         # 运行时状态
@@ -280,7 +281,37 @@ class SegmentedFitterWidget(QWidget):
         ov.addWidget(self.export_btn)
         v.addWidget(out_box)
 
+        # ---- 运行日志（v0.3.12: 解析/导出状态写这里，不再弹窗）----
+        log_box = QGroupBox('运行日志')
+        log_box.setObjectName('gb_data')
+        lv = QVBoxLayout(log_box)
+        lv.setContentsMargins(10, 6, 10, 6)
+        lv.setSpacing(4)
+        log_head = QHBoxLayout()
+        log_head.setSpacing(6)
+        log_tip = QLabel('解析 / 导出的运行情况都写在这里（不再弹窗）')
+        log_tip.setStyleSheet('color: #666; font-size: 11px;')
+        log_head.addWidget(log_tip)
+        log_head.addStretch()
+        log_clear = QPushButton('🗑 清空')
+        log_clear.clicked.connect(lambda: self.log_view.clear())
+        log_head.addWidget(log_clear)
+        lv.addLayout(log_head)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setObjectName('logView')
+        self.log_view.setFixedHeight(120)
+        log_mono = QFont('Consolas')
+        log_mono.setStyleHint(QFont.Monospace)
+        self.log_view.setFont(log_mono)
+        lv.addWidget(self.log_view, 1)
+        v.addWidget(log_box, 1)
+
         v.addStretch()
+
+        # 外部未传 log_callback 时，绑定内部 _write_log（依赖 self.log_view，创建后切换）
+        if self._external_log is None:
+            self._log = self._write_log
         outer_lay.addWidget(scroll)
         # 关键：splitter 默认用 child 的 sizeHint 当 min size，scrollarea 会被撑到
         # 内容自然高，没法缩小 → 滚动条永远不出现。设 minimumHeight=0 让它能被压扁
@@ -741,3 +772,34 @@ class SegmentedFitterWidget(QWidget):
     def _default_export_name(self) -> str:
         ts = datetime.now().strftime('%Y%m%d-%H%M%S')
         return f'segmented_fit_{ts}.csv'
+
+    def _write_log(self, msg: str, level: str = 'info'):
+        """写入内部日志栏（位于右侧参数面板底部）。
+
+        level ∈ {'info', 'success', 'warning', 'error'}，
+        分别对应黑 / 绿 / 橙 / 红色文本，前缀 [HH:MM:SS]。
+        """
+        colors = {
+            'info':    '#374151',
+            'success': '#15803d',
+            'warning': '#b45309',
+            'error':   '#b91c1c',
+        }
+        labels = {
+            'info':    'INFO',
+            'success': ' OK ',
+            'warning': 'WARN',
+            'error':   'ERR ',
+        }
+        ts = datetime.now().strftime('%H:%M:%S')
+        color = colors.get(level, '#374151')
+        label = labels.get(level, 'INFO')
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(f'[{ts}] [{label}] {msg}\n')
+        self.log_view.setTextCursor(cursor)
+        sb = self.log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())

@@ -56,10 +56,11 @@ _PLOT_COLORS = ['b', 'r', 'g', 'm', 'c', 'y', 'k', 'orange', 'purple', 'brown']
 class CurveFitterWidget(QWidget):
     """曲线拟合主功能 widget。"""
 
-    def __init__(self, log_callback=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        # v0.3.12: 弹窗改为日志写入（由 CurveFitterPanel 提供共享日志栏的回调）
-        self._log = log_callback or (lambda msg, level='info': None)
+        # v0.3.12: 弹窗改为内部日志栏（位于右侧参数面板底部）
+        # 先占位为 no-op，_build_ui 创建 log_view 后切换为 self._write_log
+        self._log = lambda msg, level='info': None
         # 运行时状态
         self.data = None              # ndarray (n_rows, n_cols)
         self.column_labels = []       # ["X", "Y1", ...]
@@ -169,7 +170,7 @@ class CurveFitterWidget(QWidget):
         gf.addWidget(self.spin_poly_deg, 2, 1)
         fit_btn = QPushButton('▶ 生成拟合曲线')
         fit_btn.setObjectName('primaryBtn')
-        fit_btn.setMinimumHeight(28)
+        fit_btn.setMinimumHeight(40)
         fit_btn.clicked.connect(self._on_fit)
         gf.addWidget(fit_btn, 3, 0, 1, 2)
         right_lay.addWidget(grp_fit)
@@ -206,19 +207,34 @@ class CurveFitterWidget(QWidget):
         gi.addLayout(right_box, 2)
         right_lay.addWidget(grp_interp)
 
-        # 4) 输出
-        grp_out = QGroupBox('保存')
-        go = QHBoxLayout(grp_out)
-        go.setContentsMargins(8, 6, 8, 6)
-        save_fit_btn = QPushButton('💾 拟合曲线')
-        save_fit_btn.clicked.connect(self._on_save_fitted)
-        save_interp_btn = QPushButton('💾 插值结果')
-        save_interp_btn.clicked.connect(self._on_save_interp)
-        go.addWidget(save_fit_btn)
-        go.addWidget(save_interp_btn)
-        go.addStretch()
-        right_lay.addWidget(grp_out)
+        # 4) 运行日志（v0.3.12: 替换原"保存"按钮 —— 解析/拟合/插值状态写这里）
+        grp_log = QGroupBox('运行日志')
+        gl = QVBoxLayout(grp_log)
+        gl.setContentsMargins(8, 6, 8, 6)
+        gl.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        tip = QLabel('解析 / 拟合 / 插值的运行情况都写在这里（不再弹窗）')
+        tip.setStyleSheet('color: #666; font-size: 11px;')
+        head.addWidget(tip)
+        head.addStretch()
+        clear_btn = QPushButton('🗑 清空')
+        clear_btn.clicked.connect(lambda: self.log_view.clear())
+        head.addWidget(clear_btn)
+        gl.addLayout(head)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setObjectName('logView')
+        self.log_view.setFixedHeight(120)
+        mono = QFont('Consolas')
+        mono.setStyleHint(QFont.Monospace)
+        self.log_view.setFont(mono)
+        gl.addWidget(self.log_view, 1)
+        right_lay.addWidget(grp_log, 1)
         right_lay.addStretch()
+
+        # 日志回调切换为内部 _write_log（依赖 self.log_view，须在创建后绑定）
+        self._log = self._write_log
 
         # 右侧栏包 QScrollArea：窗口高度不够时 4 个 GroupBox 可滚动，避免被裁剪
         right_scroll = QScrollArea()
@@ -428,44 +444,36 @@ class CurveFitterWidget(QWidget):
             'success',
         )
 
-    def _on_save_fitted(self):
-        if not self.fit_results or self.fit_x_new is None:
-            self._log('保存失败：没有拟合结果', 'warning')
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, '保存拟合曲线', 'fitted.csv', 'CSV (*.csv);;所有文件 (*.*)'
-        )
-        if not path:
-            return
-        try:
-            df_data = {'X': self.fit_x_new}
-            for i in range(self.num_y_columns):
-                key = f'{_METHOD_ITEMS[self.method_combo.currentIndex()][1]}_y{i+1}'
-                df_data[f'Y{i+1}'] = self.fit_results.get(key, np.nan)
-            pd.DataFrame(df_data).to_csv(path, index=False, float_format='%.6f')
-        except Exception as e:
-            self._log(f'保存拟合曲线失败：{e}', 'error')
-            return
-        self._log(f'全段拟合：拟合曲线已保存 → {path}', 'success')
+    def _write_log(self, msg: str, level: str = 'info'):
+        """写入内部日志栏（位于右侧参数面板底部）。
 
-    def _on_save_interp(self):
-        if self.interpolate_x is None or not self.interpolate_y_list:
-            self._log('保存失败：没有插值结果', 'warning')
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, '保存插值结果', 'interp.csv', 'CSV (*.csv);;所有文件 (*.*)'
-        )
-        if not path:
-            return
-        try:
-            df_data = {'X': self.interpolate_x}
-            for i in range(self.num_y_columns):
-                df_data[f'Y{i+1}'] = self.interpolate_y_list[i]
-            pd.DataFrame(df_data).to_csv(path, index=False, float_format='%.6f')
-        except Exception as e:
-            self._log(f'保存插值结果失败：{e}', 'error')
-            return
-        self._log(f'全段拟合：插值结果已保存 → {path}', 'success')
+        level ∈ {'info', 'success', 'warning', 'error'}，
+        分别对应黑 / 绿 / 橙 / 红色文本，前缀 [HH:MM:SS]。
+        """
+        colors = {
+            'info':    '#374151',
+            'success': '#15803d',
+            'warning': '#b45309',
+            'error':   '#b91c1c',
+        }
+        labels = {
+            'info':    'INFO',
+            'success': ' OK ',
+            'warning': 'WARN',
+            'error':   'ERR ',
+        }
+        ts = datetime.now().strftime('%H:%M:%S')
+        color = colors.get(level, '#374151')
+        label = labels.get(level, 'INFO')
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(f'[{ts}] [{label}] {msg}\n')
+        self.log_view.setTextCursor(cursor)
+        sb = self.log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     # ------------------------------------------------------------
     # UI 事件
@@ -609,13 +617,10 @@ class CurveFitterPanel(QWidget):
         outer.setSpacing(0)
         outer.addWidget(self._build_banner())
 
-        # v0.3.12: 左右 QSplitter —— 左 QTabWidget，右共享日志栏
-        # 两个 Tab 的所有 QMessageBox.information/warning 全部写入此日志
-        body = QSplitter(Qt.Horizontal)
-
-        # 多 Tab：Tab1 全段拟合（原有）, Tab2 分段复用（C2 内外段）
+        # v0.3.12: 每个 Tab 内自带日志栏（位于右侧参数面板底部）。
+        # 全段拟合 Tab 移除"保存"按钮（导出功能移交分段复用 Tab）。
         self.tabs = QTabWidget()
-        self.curve_widget = CurveFitterWidget(log_callback=self._log)
+        self.curve_widget = CurveFitterWidget()
         self.tabs.addTab(self.curve_widget, '📈  全段拟合')
         # 分段复用 widget 需要拿到 shape_design 的 STAGE-1 输出目录作为默认定位
         shape_paths = config_center.get_paths('shape_design')
@@ -623,84 +628,9 @@ class CurveFitterPanel(QWidget):
         self.seg_widget = SegmentedFitterWidget(
             default_xlsx_dir=stage1_default_dir,
             default_output_dir=self.out_dir,
-            log_callback=self._log,
         )
         self.tabs.addTab(self.seg_widget, '✂  分段复用 (C2)')
-        body.addWidget(self.tabs)
-
-        # 日志栏（占满右侧高度，宽度可调）
-        body.addWidget(self._build_log_panel())
-        body.setStretchFactor(0, 5)
-        body.setStretchFactor(1, 2)
-        body.setSizes([900, 360])
-        outer.addWidget(body, 1)
-
-    def _build_log_panel(self):
-        """共享日志栏：QTextEdit + 「🗑 清空」按钮。
-
-        level → 颜色映射：info=黑，success=绿，warning=橙，error=红。
-        所有日志带时间戳前缀 [HH:MM:SS]。
-        """
-        box = QGroupBox('运行日志')
-        box.setObjectName('gb_data')
-        outer = QVBoxLayout(box)
-        outer.setContentsMargins(8, 4, 8, 4)
-        outer.setSpacing(4)
-
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        head.addWidget(QLabel('📜'))
-        tip = QLabel('解析 / 拟合 / 插值 / 保存的运行情况都写在这里（不再弹窗）')
-        tip.setStyleSheet('color: #666; font-size: 11px;')
-        head.addWidget(tip)
-        head.addStretch()
-        clear_btn = QPushButton('🗑 清空')
-        clear_btn.clicked.connect(lambda: self.log_view.clear())
-        head.addWidget(clear_btn)
-        outer.addLayout(head)
-
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setObjectName('logView')
-        self.log_view.setMinimumHeight(80)
-        # 等宽字体，对齐时间戳和级别
-        mono = QFont('Consolas')
-        mono.setStyleHint(QFont.Monospace)
-        self.log_view.setFont(mono)
-        outer.addWidget(self.log_view, 1)
-        return box
-
-    def _log(self, msg: str, level: str = 'info'):
-        """所有子 widget 通过此回调写日志。
-
-        level ∈ {'info', 'success', 'warning', 'error'}，
-        分别对应黑 / 绿 / 橙 / 红色文本。
-        """
-        colors = {
-            'info':    '#374151',
-            'success': '#15803d',
-            'warning': '#b45309',
-            'error':   '#b91c1c',
-        }
-        labels = {
-            'info':    'INFO',
-            'success': ' OK ',
-            'warning': 'WARN',
-            'error':   'ERR ',
-        }
-        ts = datetime.now().strftime('%H:%M:%S')
-        color = colors.get(level, '#374151')
-        label = labels.get(level, 'INFO')
-        cursor = self.log_view.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
-        cursor.insertText(f'[{ts}] [{label}] {msg}\n')
-        self.log_view.setTextCursor(cursor)
-        # 滚到底
-        sb = self.log_view.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        outer.addWidget(self.tabs, 1)
 
     def _build_banner(self):
         banner = QWidget()

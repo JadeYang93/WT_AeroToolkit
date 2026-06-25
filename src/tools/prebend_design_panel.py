@@ -142,8 +142,9 @@ class PrebendDesignWidget(QWidget):
         plot_lay.addWidget(self.toolbar)
         body_split.addWidget(plot_box)
 
-        # 右：参数 + 控制点表
+        # 右：参数 + 控制点表（v0.3.14: 限制最大宽度 ~550px，让右栏在宽屏下保持约 1/3 占比）
         right_box = QWidget()
+        right_box.setMaximumWidth(550)
         right_lay = QVBoxLayout(right_box)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(8)
@@ -206,18 +207,28 @@ class PrebendDesignWidget(QWidget):
         gb.addLayout(ctrl_btn_row)
         right_lay.addWidget(self.grp_bspline)
 
-        # 3) 展向位置 + 复制/保存 + 结果预览（v0.3.12 起从底部挪到右侧栏，
-        # 在幂函数 / B 样条参数栏下方，两种模式都可见）
+        # 3) 展向位置 + 复制/保存 + 结果预览（与参数栏上下堆叠，两模式都可见）
+        # v0.3.14: span_box 内部改为左右两栏 —— 左 span_edit 输入 / 右 result_preview + 按钮
         span_box = QGroupBox('展向位置 z_span (m) 与结果')
         span_box.setObjectName('gb_data')
-        span_lay = QVBoxLayout(span_box)
+        span_lay = QHBoxLayout(span_box)
         span_lay.setContentsMargins(8, 6, 8, 6)
-        span_lay.setSpacing(4)
-        span_lay.addWidget(QLabel('z_span:'))
+        span_lay.setSpacing(6)
+        # 左栏：z_span 输入
+        left_col = QVBoxLayout()
+        left_col.setSpacing(2)
+        left_col.addWidget(QLabel('z_span:'))
         self.span_edit = QPlainTextEdit()
         self.span_edit.setPlainText(_format_float_array(DEFAULT_Z_SPAN, 2))
-        self.span_edit.setMaximumHeight(90)
-        span_lay.addWidget(self.span_edit)
+        left_col.addWidget(self.span_edit, 1)
+        span_lay.addLayout(left_col, 2)
+        # 右栏：结果预览 + 按钮（按钮在底部）
+        right_col = QVBoxLayout()
+        right_col.setSpacing(2)
+        self.result_preview = QTextEdit()
+        self.result_preview.setReadOnly(True)
+        self.result_preview.setPlaceholderText('计算后显示：z_span → prebend 表')
+        right_col.addWidget(self.result_preview, 1)
         btn_row2 = QHBoxLayout()
         copy_btn = QPushButton('📋 复制结果')
         copy_btn.clicked.connect(self._on_copy_result)
@@ -225,12 +236,8 @@ class PrebendDesignWidget(QWidget):
         save_btn.clicked.connect(self._on_save_result)
         btn_row2.addWidget(copy_btn)
         btn_row2.addWidget(save_btn)
-        span_lay.addLayout(btn_row2)
-        self.result_preview = QTextEdit()
-        self.result_preview.setReadOnly(True)
-        self.result_preview.setMaximumHeight(90)
-        self.result_preview.setPlaceholderText('计算后显示：z_span → prebend 表')
-        span_lay.addWidget(self.result_preview)
+        right_col.addLayout(btn_row2)
+        span_lay.addLayout(right_col, 1)
         right_lay.addWidget(span_box)
 
         # 关键：末尾加 stretch，单模式显示时 GroupBox 保持自然高度、顶对齐
@@ -238,7 +245,10 @@ class PrebendDesignWidget(QWidget):
         right_lay.addStretch()
 
         body_split.addWidget(right_box)
-        body_split.setSizes([620, 380])
+        # v0.3.14: 右栏占 ~1/3 宽（左 2 : 右 1）
+        body_split.setSizes([700, 350])
+        body_split.setStretchFactor(0, 2)
+        body_split.setStretchFactor(1, 1)
         outer.addWidget(body_split, 3)
 
         # 初始只显示 power 参数组
