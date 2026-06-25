@@ -48,7 +48,7 @@ TOOLS = [
     ('📊  载荷预估', LoadEstimationPanel),
     ('📈  曲线拟合', CurveFitterPanel),
     ('📐  预弯设计', PrebendDesignPanel),
-    ('🛠  CATIA 叶片建模', CatiaModelingPanel),
+    ('🛠  3D 造型', CatiaModelingPanel),
 ]
 
 
@@ -579,6 +579,19 @@ class MainWindow(QMainWindow):
             act.triggered.connect(
                 lambda _=False, mid=module_id, dn=display_name:
                     self._show_help(mid, f'{dn} — 帮助')
+            )
+
+        # 3D 造型 三个步骤的详细说明（子菜单）
+        catia_menu = help_menu.addMenu('3D 造型 — 分步说明')
+        for stage_key, stage_title in (
+            ('catia_modeling_stage1', '步骤① 构建截面'),
+            ('catia_modeling_stage2', '步骤② 重采样光顺'),
+            ('catia_modeling_stage3', '步骤③ 生成曲面'),
+        ):
+            act_stage = catia_menu.addAction(stage_title)
+            act_stage.triggered.connect(
+                lambda _=False, k=stage_key, t=stage_title:
+                    self._show_help(k, f'3D 造型 · {t} — 说明')
             )
 
         help_menu.addSeparator()

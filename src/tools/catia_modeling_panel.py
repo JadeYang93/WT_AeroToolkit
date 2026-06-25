@@ -40,8 +40,8 @@ class CatiaModelingPanel(BaseModulePanel):
     MODULE_ID = 'catia_modeling'
     DEFAULT_INPUT_SUBDIR = 'catia_modeling/input'
     DEFAULT_OUTPUT_SUBDIR = 'catia_modeling/output'
-    MODULE_TITLE = 'CATIA 叶片建模'
-    MODULE_SUBTITLE = 'C A T I A   B L A D E   M O D E L I N G'
+    MODULE_TITLE = '3D 造型'
+    MODULE_SUBTITLE = '3 D   M O D E L I N G'
 
     # 各步骤执行栏的固定高度（与基类 exec_bar 视觉一致）
     EXEC_BAR_HEIGHT = 160
