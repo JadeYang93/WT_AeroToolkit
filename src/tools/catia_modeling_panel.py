@@ -15,7 +15,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFrame, QLayout,
-    QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox,
+    QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QAbstractSpinBox,
     QCheckBox, QFileDialog, QMessageBox,
     QScrollArea, QTabWidget, QProgressBar, QTextEdit, QSizePolicy,
 )
@@ -107,12 +107,14 @@ class CatiaModelingPanel(BaseModulePanel):
     # 控件构建辅助（与原单页面版一致）
     # ============================================================
     def _spin(self, key, lo, hi, default, is_double=False):
-        """创建并登记一个 SpinBox。"""
+        """创建并登记一个 SpinBox（无上下箭头按钮，纯键盘输入）。"""
         if is_double:
             w = QDoubleSpinBox()
             w.setDecimals(3)
         else:
             w = QSpinBox()
+        # 隐藏右侧上下箭头按钮——参数靠键盘直接输入，箭头无意义
+        w.setButtonSymbols(QAbstractSpinBox.NoButtons)
         w.setRange(lo, hi)
         w.setValue(default)
         self._param_widgets[key] = w
