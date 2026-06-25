@@ -14,7 +14,7 @@ import subprocess
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFrame, QLayout,
     QPushButton, QLabel, QLineEdit, QSpinBox, QDoubleSpinBox,
     QCheckBox, QFileDialog, QMessageBox,
     QScrollArea, QTabWidget, QProgressBar, QTextEdit, QSizePolicy,
@@ -125,10 +125,16 @@ class CatiaModelingPanel(BaseModulePanel):
         return w
 
     def _row(self, label, *widgets):
-        """生成 (QLabel, [widgets...]) 横排的 QHBoxLayout 容器。"""
+        """生成 (QLabel, [widgets...]) 横排的 QHBoxLayout 容器。
+
+        垂直 sizePolicy 设为 Fixed：防止在 QVBoxLayout / ScrollArea 中被
+        拉伸占满高度，确保折叠区展开/收起时上方各行位置不动（顶对齐）。
+        """
         row = QWidget()
+        row.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSizeConstraint(QLayout.SetFixedSize)
         rl.addWidget(QLabel(label))
         for w in widgets:
             rl.addWidget(w)
@@ -151,12 +157,23 @@ class CatiaModelingPanel(BaseModulePanel):
     # ============================================================
     # 各步骤参数区构建（内容不变，仅去掉 GroupBox 外壳改成 tab 内区）
     # ============================================================
-    def _build_sections_params(self):
-        """① 构建截面参数区。"""
+    def _make_params_container(self):
+        """创建参数区容器：垂直 Fixed，内容按需撑开，多余空间归 ScrollArea。
+
+        返回 (widget, layout)。各步骤构建方法把行 addWidget 到 layout，
+        末尾由调用方 _end_params_container 加 stretch 收尾。
+        这样折叠区显隐时，参数区只占内容高度，上方行顶对齐、不乱动。
+        """
         wrap = QWidget()
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         gl = QVBoxLayout(wrap)
         gl.setContentsMargins(0, 6, 0, 6)
         gl.setSpacing(6)
+        return wrap, gl
+
+    def _build_sections_params(self):
+        """① 构建截面参数区。"""
+        wrap, gl = self._make_params_container()
         # 核心
         gl.addWidget(self._row('截面数', self._spin('sec.num_groups', 1, 9999, 96)))
         gl.addWidget(self._row('起始组号', self._spin('sec.start_group', 1, 9999, 1)))
@@ -186,10 +203,7 @@ class CatiaModelingPanel(BaseModulePanel):
 
     def _build_resample_params(self):
         """② 重采样光顺参数区。"""
-        wrap = QWidget()
-        gl = QVBoxLayout(wrap)
-        gl.setContentsMargins(0, 6, 0, 6)
-        gl.setSpacing(6)
+        wrap, gl = self._make_params_container()
         gl.addWidget(self._row('源样条集', self._line('res.source_set', 'Z_Smooths')))
         gl.addWidget(self._row('重采样点数', self._spin('res.num_points', 2, 99999, 149)))
         gl.addWidget(self._row('光顺偏差阈值', self._spin('res.smooth_max_deviation', 0, 9999, 1.0, is_double=True)))
@@ -207,10 +221,7 @@ class CatiaModelingPanel(BaseModulePanel):
 
     def _build_loft_params(self):
         """③ 生成曲面参数区。"""
-        wrap = QWidget()
-        gl = QVBoxLayout(wrap)
-        gl.setContentsMargins(0, 6, 0, 6)
-        gl.setSpacing(6)
+        wrap, gl = self._make_params_container()
         gl.addWidget(self._row('源曲线集', self._line('loft.source_set', 'Z_ResampleSmooth')))
         gl.addWidget(self._row('截面耦合方式', self._spin('loft.section_coupling', 0, 2, 1)))
         adv = QWidget()
@@ -256,11 +267,19 @@ class CatiaModelingPanel(BaseModulePanel):
         # 标题 + 副标题
         v.addWidget(self._build_step_header(title, subtitle))
 
-        # 参数区（可滚动）
+        # 参数区（可滚动）。用中间容器包裹：顶部参数区（Fixed，按内容定高）
+        # + 底部 stretch 吸收多余空间，确保参数行始终顶对齐、折叠/展开时
+        # 不被 ScrollArea 的 widgetResizable 拉伸导致位置乱动。
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setWidget(params_widget)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll_container = QWidget()
+        sc_layout = QVBoxLayout(scroll_container)
+        sc_layout.setContentsMargins(0, 0, 0, 0)
+        sc_layout.setSpacing(0)
+        sc_layout.addWidget(params_widget)
+        sc_layout.addStretch()
+        scroll.setWidget(scroll_container)
         v.addWidget(scroll, 1)
 
         # 独立执行栏
