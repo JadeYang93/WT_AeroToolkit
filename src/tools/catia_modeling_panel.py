@@ -65,14 +65,49 @@ class CatiaModelingPanel(BaseModulePanel):
         # 顶部输入区（三步骤共用，放 tab 之外）
         bl.addWidget(self._build_input_area())
 
-        # 三 Tab
+        # 三 Tab（页签加大字号 + 选中色块，更显眼）
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_sections_tab(), '  ① 构建截面  ')
-        self.tabs.addTab(self._build_resample_tab(), '  ② 重采样光顺  ')
-        self.tabs.addTab(self._build_loft_tab(), '  ③ 生成曲面  ')
+        self.tabs.addTab(self._build_sections_tab(), '① 构建截面')
+        self.tabs.addTab(self._build_resample_tab(), '② 重采样光顺')
+        self.tabs.addTab(self._build_loft_tab(), '③ 生成曲面')
+        self.tabs.setStyleSheet(self._tab_qss())
         bl.addWidget(self.tabs, 1)
 
         outer_layout.addWidget(body, 1)
+
+    def _tab_qss(self):
+        """Tab 页签样式：加大字号/内边距，未选浅底灰字、选中白底深字 + 天蓝底部色条。
+
+        让三个步骤页签比默认更显眼、更易点击切换。
+        """
+        return """
+        QTabBar { background: #e2e8f0; }
+        QTabBar::tab {
+            background: #cbd5e1;
+            color: #475569;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 12px 32px;
+            margin-right: 4px;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+            min-width: 90px;
+        }
+        QTabBar::tab:selected {
+            background: #ffffff;
+            color: #0ea5e9;
+            border-bottom: 3px solid #0ea5e9;
+        }
+        QTabBar::tab:hover:!selected {
+            background: #e2e8f0;
+            color: #1e3a5f;
+        }
+        QTabWidget::pane {
+            border: 1px solid #e5e7eb;
+            border-top: none;
+            background: #ffffff;
+        }
+        """
 
     # ------------------------------------------------------------
     # 输入区（STP 路径，三步骤共用）
