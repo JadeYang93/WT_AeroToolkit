@@ -104,14 +104,64 @@ class CatiaContext:
         return self.part.CreateReferenceFromObject(obj)
 
     def measure_point(self, reference):
-        """测量点 Reference 的坐标 [x, y, z]。
+        """测量点 Reference 的坐标 [x, y, z]（毫米）。
 
-        封装参考脚本里 SPAWorkbench.GetMeasurable().GetCoordinates(...)。
+        优先用 VBA 注入式（V5R21 已验证可靠），失败回退 GetMeasurable。
         """
+        try:
+            return self.measure_point_vba(reference)
+        except Exception:
+            # 回退：部分版本 VBA 注入受限，用官方 API
+            measurable = self.spa_workbench.GetMeasurable(reference)
+            coords = measurable.GetCoordinates(3)
+            return list(coords)
+
+    def measure_point_vba(self, reference):
+        """VBA 注入式测点（毫米）—— 与参考脚本一致，V5R21 已验证。
+
+        SystemService.Evaluate 注入一段 VBA Function，用 GetMeasurable.GetPoint
+        取坐标。比 Python 直接调 GetCoordinates 在老版本更稳定。
+        """
+        code = '''Function MeasurePoint(Wb, Ref)
+                 Dim mes, Coord(2)
+                 Set mes = Wb.GetMeasurable(Ref)
+                 mes.GetPoint Coord
+                 MeasurePoint = Coord
+                 End Function'''
+        srv = self.catia.SystemService
+        coord = srv.Evaluate(code, 0, 'MeasurePoint',
+                             (self.spa_workbench, reference))
+        return [coord[i] for i in range(3)] if coord else [0.0, 0.0, 0.0]
+
+    def measure_length(self, reference):
+        """测量曲线/边 Reference 的长度。"""
         measurable = self.spa_workbench.GetMeasurable(reference)
-        # GetCoordinates 返回元组，需传一个数组接收（VBA SafeArray 约定）
-        coords = measurable.GetCoordinates(3)
-        return list(coords)
+        return float(measurable.Length)
+
+    # ------------------------------------------------------------
+    # 参数缓存 —— sections 步骤用，避免逐点 COM 线性扫描
+    # ------------------------------------------------------------
+    def build_param_cache(self, prefix='Sect'):
+        """一次性遍历 Parameters 集合，构建 name→param 缓存。
+
+        v0.2 改进：原脚本靠 FindObjectByName 逐点查（O(n²)），这里一次性
+        遍历所有参数（带 .Name 路径前缀处理），主循环 O(1) 查找，大幅加速。
+        Returns:
+            dict: {短名(如 Sect1_200): param 对象}
+        """
+        params = self.part.Parameters
+        cache = {}
+        n = params.Count
+        for i in range(1, n + 1):
+            try:
+                p = params.Item(i)
+                # V5R21 的 .Name 可能带路径前缀（如 Part1\\...），取最后一段
+                short = p.Name.rsplit('\\', 1)[-1]
+                if short.startswith(prefix):
+                    cache[short] = p
+            except Exception:
+                continue
+        return cache
 
     def update(self):
         """触发 Part 更新（等价 CATIA 的 Update）。"""
