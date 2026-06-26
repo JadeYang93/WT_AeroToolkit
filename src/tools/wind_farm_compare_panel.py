@@ -18,8 +18,8 @@ from PyQt5.QtWidgets import (
     QDateEdit, QScrollArea, QFrame, QSizePolicy,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
 )
-from wind_farm_compare import run_compare, read_farm_monthly, METRIC_COLUMN
-from io_utils import scan_farm_dirs, EXCEL_FILENAME
+from business.wind_farm.compare import run_compare, read_farm_monthly, METRIC_COLUMN
+from core.io_utils import scan_farm_dirs, EXCEL_FILENAME
 from global_config import config_center
 
 

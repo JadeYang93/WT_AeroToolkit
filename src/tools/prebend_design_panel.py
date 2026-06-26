@@ -27,13 +27,13 @@ from PyQt5.QtWidgets import (
 )
 
 # matplotlib 嵌入式画布（import plotting 触发中文字体配置）
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from global_config import config_center
-from prebend_design import (
+from business.prebend_design import (
     DEFAULT_TIP_PB, DEFAULT_GAMMA, DEFAULT_Z_START_RATIO,
     DEFAULT_CONTINUITY, DEFAULT_CTRL, DEFAULT_Z_SPAN, GAMMA_MIN,
     compute_prebend_power, compute_prebend_bspline,

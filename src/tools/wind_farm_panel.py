@@ -17,8 +17,8 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QSpinBox, QDateEdit, QComboBox, QScrollArea, QFrame, QSizePolicy
 )
-from pipeline import run
-from io_utils import get_monthly_ti_summary, scan_data_files
+from business.wind_farm import run
+from core.io_utils import get_monthly_ti_summary, scan_data_files
 from config import (
     WINDOW_MIN, STEP_MIN, VALID_RATIO,
     UNSPECIFIED_BLADE_KEY, LINESTYLE_OPTIONS, LINE_WIDTHS, DEFAULT_LINEWIDTH,

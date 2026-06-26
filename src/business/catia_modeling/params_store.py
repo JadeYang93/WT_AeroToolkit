@@ -12,6 +12,8 @@ import json
 import os
 import tempfile
 
+from config import PROJECT_ROOT
+
 # 默认参数（与设计文档 3.5 表一致；几何集名统一 Z_* 体系默认串联）
 DEFAULTS = {
     'sections': {
@@ -57,9 +59,8 @@ def _config_path():
 
     PROJECT_ROOT 通过相对本文件向上回溯定位（src/catia_modeling/ → 项目根）。
     """
-    # 本文件: <root>/src/catia_modeling/params_store.py
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, '配置', 'catia_modeling_params.json')
+    # PROJECT_ROOT 由 config.py 统一定义，避免数层数反推
+    return os.path.join(PROJECT_ROOT, '配置', 'catia_modeling_params.json')
 
 
 def _deep_merge(base, override):

@@ -27,15 +27,15 @@ from PyQt5.QtWidgets import (
 
 from global_config import config_center
 
-from blade_converter.bc_config import (
+from business.blade_converter.bc_config import (
     DEFAULT_BLADE_DB_FILE, DEFAULT_OUTPUT_FILE, DEFAULT_MAC_FILE,
     DEFAULT_TXT_INPUT_FILE,
     DEFAULT_EXCEL_INPUT_FILE,
     SOLVER_FAROB, SOLVER_FRBEX,
 )
-from blade_converter.conversion import blade_db_to_focus2blade_wisdem
-from blade_converter.prj_processor import PRJFileProcessor
-from blade_converter.txt_excel import (
+from business.blade_converter.conversion import blade_db_to_focus2blade_wisdem
+from business.blade_converter.prj_processor import PRJFileProcessor
+from business.blade_converter.txt_excel import (
     convert_txt_to_excel, convert_excel_to_txt,
 )
 

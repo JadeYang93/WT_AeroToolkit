@@ -11,7 +11,7 @@ from config import (
     MONTH_DAY_THRESHOLD, WEEK_DAY_THRESHOLD,
     DIFF_THRESHOLD, MIN_SPEED, MAX_SPEED, MISSING_MARK,
 )
-from io_utils import scan_data_files, read_data_file, read_data_file_detected, detect_columns
+from core.io_utils import scan_data_files, read_data_file, read_data_file_detected, detect_columns
 
 
 # ================================================================

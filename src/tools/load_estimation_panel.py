@@ -28,12 +28,12 @@ from PyQt5.QtWidgets import (
 # matplotlib 嵌入式画布
 # 重要：导入 plotting 触发 matplotlib.use('Agg') + 中文字体配置，
 # 必须在 pyplot 被使用前完成（与 shape_design_panel 同模式）
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from global_config import config_center
-from load_estimation import (
+from business.load_estimation import (
     load_data, fit_loads, save_results, plot_result,
     VIEW_OPTIONS, COMPONENTS,
 )

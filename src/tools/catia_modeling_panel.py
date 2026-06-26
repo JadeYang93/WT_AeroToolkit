@@ -21,11 +21,11 @@ from PyQt5.QtWidgets import (
 )
 
 from tools.base_module_panel import BaseModulePanel
-from catia_modeling import (
+from business.catia_modeling import (
     SectionParams, ResampleParams, LoftParams,
     load_params, save_params, CatiaModelError,
 )
-from catia_modeling.worker import CatiaModelingWorker
+from business.catia_modeling.worker import CatiaModelingWorker
 
 
 # 三个步骤的元信息：(step_key, tab 标题, tab 副标题, 运行按钮文字)

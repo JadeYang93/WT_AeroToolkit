@@ -11,6 +11,7 @@ import pandas as pd
 from pathlib import Path
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from config import PROJECT_ROOT
 from .solver_config import (
     SOLVER_FAROB, SOLVER_FRBEX, DEFAULT_MODULES_PATH, DEFAULT_MAC_FILE,
     FRBEX_DEFAULT_DRMX, FUNCTION_READ_MAC, FUNCTION_PARSE_MAC,
@@ -565,10 +566,8 @@ class Focus6SolverThread(QThread):
     def read_config_template(self, template_name):
         """读取配置文件模板"""
         try:
-            import os
-            # 获取当前脚本所在目录的上级目录
-            current_dir = Path(__file__).parent.parent.parent
-            template_path = current_dir / "config_templates" / template_name
+            # PROJECT_ROOT 由 config.py 统一定义，避免数层数反推
+            template_path = Path(PROJECT_ROOT) / "config_templates" / template_name
 
             if not template_path.exists():
                 self.log_signal.emit(f"\n✗ 错误：找不到配置模板文件: {template_path}")

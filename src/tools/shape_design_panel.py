@@ -33,12 +33,12 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 
 # 重要：导入 plotting 会触发 matplotlib.use('Agg') + 中文字体配置，
 # FigureCanvasQTAgg 直接用 Figure 实例即可继承字体设置，不受 Agg 影响
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 
 from global_config import config_center
 from config import PROJECT_ROOT
 
-from shape_design import (
+from business.shape_design import (
     ShapeDesignOptions,
     build_shape_design,
     export_shape_design,

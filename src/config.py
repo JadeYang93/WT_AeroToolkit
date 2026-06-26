@@ -6,6 +6,10 @@ import os
 # 供 global_config.py 等模块计算 输入数据/输出/config/ 等绝对路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# src 目录（本文件所在目录）—— 供定位 src/_bin/xfoil.exe 等工具箱内资源
+# 集中定义，避免各模块用 parent×N 数层数反推（脆弱、易随重构错位）
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # 应用版本
 APP_VERSION = 'v0.3.15'
 

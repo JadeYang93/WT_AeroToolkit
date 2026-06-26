@@ -28,13 +28,13 @@ from PyQt5.QtWidgets import (
 )
 
 # matplotlib 嵌入式画布（import plotting 触发中文字体配置）
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from global_config import config_center
-from curve_fitter import (
+from business.curve_fitter import (
     parse_data, generate_curve, calculate_interpolation, MAX_ROWS,
 )
 from tools.segmented_fitter_widget import SegmentedFitterWidget

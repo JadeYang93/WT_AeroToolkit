@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
 )
 
 from global_config import config_center
-from focus6_solver.solver_config import (
+from business.focus6_solver.solver_config import (
     DEFAULT_MAC_FILE, DEFAULT_MODULES_PATH,
     SOLVER_FAROB, SOLVER_FRBEX,
     FUNCTION_READ_MAC, FUNCTION_PARSE_MAC, FUNCTION_FREQUENCY,
@@ -35,7 +35,7 @@ from focus6_solver.solver_config import (
     FUNCTION_LOAD_CONVERSION,
     FRBEX_DEFAULT_DRMX,
 )
-from focus6_solver import Focus6SolverThread, OneClickRunThread
+from business.focus6_solver import Focus6SolverThread, OneClickRunThread
 
 
 # ============================================================

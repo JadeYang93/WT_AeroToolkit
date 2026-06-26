@@ -26,12 +26,12 @@ from PyQt5.QtWidgets import (
 )
 
 # matplotlib 嵌入（import plotting 触发中文字体配置）
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.lines import Line2D
 
-from curve_fitter import (
+from business.curve_fitter import (
     merge_and_export,
     fit_middle_segment, make_default_middle_ctrl,
 )
@@ -367,7 +367,7 @@ class SegmentedFitterWidget(QWidget):
             return
         # 解析两列（沿用 curve_fitter.parse_data 的多列、空白、注释处理）
         try:
-            from curve_fitter import parse_data, MAX_ROWS
+            from business.curve_fitter import parse_data, MAX_ROWS
             data, _labels = parse_data(text, max_rows=MAX_ROWS)
         except Exception as e:
             self._log(f'解析失败：{e}', 'error')

@@ -16,6 +16,8 @@ from typing import Iterable
 import numpy as np
 from openpyxl import Workbook, load_workbook
 
+from config import SRC_DIR
+
 from .compute import build_result_from_airfoil_points
 from .exporters import matlab_station_label, station_label
 
@@ -762,9 +764,8 @@ def run_airfoil_correction(
     airfoil_xlsx = Path(airfoil_xlsx)
     outdir = Path(outdir)
     # XFOIL 固定路径：src/_bin/xfoil.exe（工具箱约定，不走 ConfigCenter）
-    # __file__ = src/shape_design/correction.py → parent.parent = src/
-    src_dir = Path(__file__).resolve().parent.parent
-    xfoil_exe = Path(xfoil_exe) if xfoil_exe else src_dir / "_bin" / "xfoil.exe"
+    # SRC_DIR 由 config.py 统一定义，避免数层数反推
+    xfoil_exe = Path(xfoil_exe) if xfoil_exe else Path(SRC_DIR) / "_bin" / "xfoil.exe"
     workdir = Path(workdir) if workdir else outdir / "xfoil_work"
     dat_dir = outdir / "dat"
     outdir.mkdir(parents=True, exist_ok=True)

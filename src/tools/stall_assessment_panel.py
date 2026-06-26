@@ -28,12 +28,12 @@ from PyQt5.QtWidgets import (
 
 # matplotlib 嵌入式画布（导入 plotting 触发 Agg 后端 + 中文字体配置，
 # 必须在 pyplot 被使用前完成 —— 与 load_estimation_panel 同模式）
-import plotting  # noqa: F401
+import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from tools.base_module_panel import BaseWorkerPanel
-from stall_assessment import (
+from business.stall_assessment import (
     parse_span_text, parse_span_file,
     interpolate, save_csv, plot_check, plot_span,
 )

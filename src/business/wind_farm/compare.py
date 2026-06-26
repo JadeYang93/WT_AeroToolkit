@@ -7,9 +7,9 @@
 import os
 import pandas as pd
 
-from io_utils import scan_farm_dirs, EXCEL_FILENAME
-from plotting import plot_farm_compare
-from export import export_compare_excel
+from core.io_utils import scan_farm_dirs, EXCEL_FILENAME
+from core.plotting import plot_farm_compare
+from core.export import export_compare_excel
 
 
 # 指标 → 月均 sheet 候选名（兼容 export.py 默认输出 + 用户可能手改成「月平均」前缀）
