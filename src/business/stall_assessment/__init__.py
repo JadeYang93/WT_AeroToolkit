@@ -15,6 +15,7 @@
 from .core import (
     parse_span_text,
     parse_span_file,
+    normalize_positions,
     interpolate,
     save_csv,
     plot_check,
@@ -26,6 +27,7 @@ from .core import (
 __all__ = [
     'parse_span_text',
     'parse_span_file',
+    'normalize_positions',
     'interpolate',
     'save_csv',
     'plot_check',

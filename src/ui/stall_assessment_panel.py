@@ -34,7 +34,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from ui.base_module_panel import BaseWorkerPanel
 from business.stall_assessment import (
-    parse_span_text, parse_span_file,
+    parse_span_text, parse_span_file, normalize_positions,
     interpolate, save_csv, plot_span,
     find_intersections, plot_span_compare,
 )
@@ -288,8 +288,14 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        # 工具行：保存图片
+        # 工具行：显示相对厚度开关 + 保存图片
         tool_row = QHBoxLayout()
+        from PyQt5.QtWidgets import QCheckBox
+        self.show_thickness_cb = QCheckBox('显示相对厚度')
+        self.show_thickness_cb.setChecked(True)
+        self.show_thickness_cb.toggled.connect(
+            lambda: self._refresh_plot() if self._result is not None else None)
+        tool_row.addWidget(self.show_thickness_cb)
         tool_row.addStretch()
         save_btn = QPushButton('💾 保存图片')
         save_btn.clicked.connect(self._on_save_figure)
@@ -444,6 +450,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
         except Exception as e:
             self.log_area.append(f'⚠ 展向分布解析失败：{e}')
             return
+        # 展向位置无量纲化（若输入的是实际位置，最大值 > 1 则归一化）
+        positions, span_norm = normalize_positions(positions)
 
         # 3. 读攻角分布
         text_aoa = self.aoa_edit.toPlainText().strip()
@@ -455,9 +463,15 @@ class StallAssessmentPanel(BaseWorkerPanel):
         except Exception as e:
             self.log_area.append(f'⚠ 攻角分布解析失败：{e}')
             return
+        # 攻角分布展向位置同样无量纲化
+        aoa_positions, aoa_norm = normalize_positions(aoa_positions)
 
         # 4. 启动 Worker
         self.log_area.clear()
+        if span_norm:
+            self.log_area.append('ℹ 展向分布：检测到实际展向位置，已自动转为无量纲 r/R')
+        if aoa_norm:
+            self.log_area.append('ℹ 攻角分布：检测到实际展向位置，已自动转为无量纲 r/R')
         self.progress.setValue(0)
         self.run_btn.setEnabled(False)
         self.run_btn.setText('计算中...')
@@ -531,6 +545,10 @@ class StallAssessmentPanel(BaseWorkerPanel):
     def _refresh_plot(self):
         if self._result is None:
             return
+        # 移除上次可能创建的右轴（twinx），避免取消勾选后右轴残留
+        for ax in list(self.fig.axes):
+            if ax is not self.ax_span:
+                self.fig.delaxes(ax)
         self.ax_span.clear()
         plot_span_compare(
             self.ax_span,
@@ -540,6 +558,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
             span_pos=self._result['positions'],
             span_thickness=self._result['thickness'],
             std_thickness=self._result['profile'][:, 0],
+            show_thickness=self.show_thickness_cb.isChecked(),
         )
         self.fig.tight_layout()
         self.canvas.draw()
