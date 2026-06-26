@@ -683,9 +683,8 @@ def main():
 
     assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_assets')
     assets_dir = assets_dir.replace('\\', '/')   # QSS url 用正斜杠
-    resources_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources')
-    resources_dir = resources_dir.replace('\\', '/')
-    style = APP_STYLE.replace('{assets_dir}', assets_dir).replace('__CHECK_SVG__', resources_dir)
+    # check.svg 已并入 _assets/，__CHECK_SVG__ 与 {assets_dir} 共用同一目录
+    style = APP_STYLE.replace('{assets_dir}', assets_dir).replace('__CHECK_SVG__', assets_dir)
     app.setStyleSheet(style)
 
     # 首启迁移：把旧散落在 输入数据/ 顶层的文件移到 输入数据/{module}/ 子目录
