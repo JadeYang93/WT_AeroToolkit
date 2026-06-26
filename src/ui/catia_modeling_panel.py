@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QTabWidget, QProgressBar, QTextEdit, QSizePolicy,
 )
 
-from tools.base_module_panel import BaseModulePanel
+from ui.base_module_panel import BaseModulePanel
 from business.catia_modeling import (
     SectionParams, ResampleParams, LoftParams,
     load_params, save_params, CatiaModelError,

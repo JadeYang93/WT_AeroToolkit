@@ -36,7 +36,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 import core.plotting as plotting  # noqa: F401
 
 from global_config import config_center
-from config import PROJECT_ROOT
+from config import PROJECT_ROOT, SRC_DIR
 
 from business.shape_design import (
     ShapeDesignOptions,
@@ -53,12 +53,11 @@ from business.shape_design import (
 
 
 # XFOIL 固定路径：src/_bin/xfoil.exe（不走 ConfigCenter）
-SRC_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = SRC_DIR.parent
-DEFAULT_XFOIL = SRC_DIR / '_bin' / 'xfoil.exe'
+# SRC_DIR / PROJECT_ROOT 由 config.py 统一定义，避免数层数反推
+DEFAULT_XFOIL = Path(SRC_DIR) / '_bin' / 'xfoil.exe'
 
 # 图示意图资源目录（app-bundled 静态图）
-DIAGRAMS_DIR = PROJECT_ROOT / '配置' / 'diagrams'
+DIAGRAMS_DIR = Path(PROJECT_ROOT) / '配置' / 'diagrams'
 
 
 # ============================================================

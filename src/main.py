@@ -24,16 +24,16 @@ from PyQt5.QtWidgets import (
 )
 
 from config import APP_VERSION, PROJECT_ROOT
-from tools.wind_farm_panel import WindFarmStatsPanel
-from tools.wind_farm_compare_panel import WindFarmComparePanel
-from tools.shape_design_panel import ShapeDesignPanel
-from tools.blade_converter_panel import BladeConverterPanel
-from tools.focus6_solver_panel import Focus6SolverPanel
-from tools.load_estimation_panel import LoadEstimationPanel
-from tools.stall_assessment_panel import StallAssessmentPanel
-from tools.curve_fitter_panel import CurveFitterPanel
-from tools.prebend_design_panel import PrebendDesignPanel
-from tools.catia_modeling_panel import CatiaModelingPanel
+from ui.wind_farm_panel import WindFarmStatsPanel
+from ui.wind_farm_compare_panel import WindFarmComparePanel
+from ui.shape_design_panel import ShapeDesignPanel
+from ui.blade_converter_panel import BladeConverterPanel
+from ui.focus6_solver_panel import Focus6SolverPanel
+from ui.load_estimation_panel import LoadEstimationPanel
+from ui.stall_assessment_panel import StallAssessmentPanel
+from ui.curve_fitter_panel import CurveFitterPanel
+from ui.prebend_design_panel import PrebendDesignPanel
+from ui.catia_modeling_panel import CatiaModelingPanel
 from path_migration import migrate_legacy_paths, migrate_extras_between_modules
 from settings_dialog import SettingsDialog
 from help_viewer import HelpDialog

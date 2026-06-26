@@ -25,7 +25,7 @@ from config import (
     ALPHA_OPTIONS, DEFAULT_ALPHA,
 )
 from global_config import config_center
-from tools.base_module_panel import BaseWorkerPanel
+from ui.base_module_panel import BaseWorkerPanel
 
 
 class StatsWorker(QThread):

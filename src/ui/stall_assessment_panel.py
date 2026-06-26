@@ -32,7 +32,7 @@ import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from tools.base_module_panel import BaseWorkerPanel
+from ui.base_module_panel import BaseWorkerPanel
 from business.stall_assessment import (
     parse_span_text, parse_span_file,
     interpolate, save_csv, plot_check, plot_span,

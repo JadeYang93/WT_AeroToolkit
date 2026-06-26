@@ -37,7 +37,7 @@ from global_config import config_center
 from business.curve_fitter import (
     parse_data, generate_curve, calculate_interpolation, MAX_ROWS,
 )
-from tools.segmented_fitter_widget import SegmentedFitterWidget
+from ui.segmented_fitter_widget import SegmentedFitterWidget
 
 
 # 拟合方法下拉项 → curve_fitter 内部 key
