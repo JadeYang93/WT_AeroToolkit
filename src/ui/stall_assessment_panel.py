@@ -35,34 +35,47 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from ui.base_module_panel import BaseWorkerPanel
 from business.stall_assessment import (
     parse_span_text, parse_span_file,
-    interpolate, save_csv, plot_check, plot_span,
+    interpolate, save_csv, plot_span,
+    find_intersections, plot_span_compare,
 )
 
 
-# 默认标准翼型示例（厚度, 失速攻角°）—— 用户可自由增删
+# 默认标准翼型示例（厚度%, 失速攻角°）—— 用户可自由增删
 DEFAULT_PROFILE = [
-    (0.18, 12.5),
-    (0.21, 13.5),
-    (0.25, 14.5),
-    (0.30, 15.5),
-    (0.40, 17.0),
-    (0.60, 18.5),
-    (1.00, 20.0),
+    (18, 15.5),
+    (21, 12.0),
+    (25, 12.0),
+    (30, 13.0),
+    (40, 10.0),
+    (100, 0.0),
 ]
 
-# 默认展向分布示例（r/R, 相对厚度）—— 提示用户格式，可清空
-DEFAULT_SPAN = """r/R, t/c
-0.00, 1.00
-0.10, 0.85
-0.20, 0.60
-0.30, 0.45
-0.40, 0.35
-0.50, 0.30
-0.60, 0.27
-0.70, 0.25
-0.80, 0.22
-0.90, 0.20
-1.00, 0.18
+# 默认展向分布示例（r/R, 相对厚度%）—— 提示用户格式，可清空
+DEFAULT_SPAN = """0.00, 100
+0.10, 85
+0.20, 60
+0.30, 45
+0.40, 35
+0.50, 30
+0.60, 27
+0.70, 25
+0.80, 22
+0.90, 20
+1.00, 18
+"""
+
+# 默认最大攻角分布示例（r/R, 攻角°）—— 用户可清空
+DEFAULT_AOA = """0.00, 0.0
+0.10, 5.0
+0.20, 7.0
+0.30, 8.5
+0.40, 9.5
+0.50, 10.0
+0.60, 10.5
+0.70, 11.0
+0.80, 12.0
+0.90, 13.5
+1.00, 15.0
 """
 
 
@@ -76,27 +89,44 @@ class StallAssessmentWorker(QThread):
     """
     progress = pyqtSignal(int, str)
 
-    def __init__(self, profile, positions, thickness, output_dir):
+    def __init__(self, profile, positions, thickness, aoa_positions, aoa,
+                 output_dir):
         super().__init__()
         # profile: (N,2) ndarray; positions/thickness: 1D ndarray
         self.profile = profile
         self.positions = positions
         self.thickness = thickness
+        # 最大攻角分布（独立展向位置 + 攻角）
+        self.aoa_positions = aoa_positions
+        self.aoa = aoa
         self.output_dir = output_dir
         # 输出（供主线程取回画图）
         self.span_alpha = None
+        self.crossings = None  # 相交点 r/R 列表
         self.error = None
 
     def run(self):
         try:
             self.progress.emit(10, f'标准翼型点：{self.profile.shape[0]} 个')
             self.progress.emit(20, f'展向分布：{self.positions.size} 站')
-            self.progress.emit(50, '执行 PCHIP 保形插值...')
+            self.progress.emit(40, f'最大攻角分布：{self.aoa_positions.size} 站')
+            self.progress.emit(55, '执行 PCHIP 保形插值...')
             span_alpha = interpolate(
                 self.profile[:, 0], self.profile[:, 1], self.thickness,
             )
             self.span_alpha = span_alpha
-            self.progress.emit(75, f'写入输出目录：{self.output_dir}')
+
+            self.progress.emit(70, '求失速角/攻角交点...')
+            self.crossings = find_intersections(
+                self.positions, span_alpha, self.aoa_positions, self.aoa,
+            )
+            if self.crossings:
+                pts = ', '.join(f'{c:.3f}' for c in self.crossings)
+                self.progress.emit(75, f'相交点 r/R = {pts}')
+            else:
+                self.progress.emit(75, '无相交点（全展向均未失速 / 均已失速）')
+
+            self.progress.emit(85, f'写入输出目录：{self.output_dir}')
             out_path = save_csv(self.positions, self.thickness,
                                 span_alpha, self.output_dir)
             self.progress.emit(100, '=== 完成 ===')
@@ -129,40 +159,49 @@ class StallAssessmentPanel(BaseWorkerPanel):
     # 主体内容（基类会自动追加 exec_bar）
     # ------------------------------------------------------------
     def _build_main_content(self):
-        split = QSplitter(Qt.Horizontal)
-        split.setChildrenCollapsible(False)
+        # 总布局：左（2×2 网格） | 右（画图区）
+        outer_split = QSplitter(Qt.Horizontal)
+        outer_split.setChildrenCollapsible(False)
 
-        # === 左栏：输入 ===
+        # === 左：2×2 网格 ===
+        #   行0: 标准翼型表 | 结果
+        #   行1: 展向分布   | 攻角分布
         left = QWidget()
-        left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(12, 12, 8, 12)
-        left_lay.setSpacing(8)
-        left_lay.addWidget(self._build_profile_group())
-        left_lay.addWidget(self._build_span_group(), 1)
+        grid = QGridLayout(left)
+        grid.setContentsMargins(12, 12, 8, 12)
+        grid.setSpacing(8)
+        grid.addWidget(self._build_profile_group(), 0, 0)
+        grid.addWidget(self._build_result_group(), 0, 1)
+        grid.addWidget(self._build_span_group(), 1, 0)
+        grid.addWidget(self._build_aoa_group(), 1, 1)
+        # 两列等宽，两行等高
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
 
-        # === 右栏：图 + 结果表 ===
+        # === 右：画图区 ===
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(8, 12, 12, 12)
         right_lay.setSpacing(8)
         right_lay.addWidget(self._build_plot_group(), 1)
-        right_lay.addWidget(self._build_result_group(), 1)
 
-        split.addWidget(left)
-        split.addWidget(right)
-        split.setSizes([460, 700])
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
+        outer_split.addWidget(left)
+        outer_split.addWidget(right)
+        outer_split.setSizes([640, 560])
+        outer_split.setStretchFactor(0, 3)
+        outer_split.setStretchFactor(1, 2)
 
         wrap = QWidget()
         wrap_lay = QVBoxLayout(wrap)
         wrap_lay.setContentsMargins(0, 0, 0, 0)
-        wrap_lay.addWidget(split, 1)
+        wrap_lay.addWidget(outer_split, 1)
         return wrap
 
     # ---------- 标准翼型表 ----------
     def _build_profile_group(self):
-        box = QGroupBox('标准翼型表（相对厚度, 失速攻角°）')
+        box = QGroupBox('标准翼型表')
         box.setObjectName('gb_data')
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 6, 8, 6)
@@ -189,7 +228,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
 
     # ---------- 展向分布输入 ----------
     def _build_span_group(self):
-        box = QGroupBox('展向分布（展向位置, 相对厚度）')
+        box = QGroupBox('展向分布')
         box.setObjectName('gb_data')
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 6, 8, 6)
@@ -214,6 +253,33 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.addLayout(row)
         return box
 
+    # ---------- 攻角分布输入 ----------
+    def _build_aoa_group(self):
+        box = QGroupBox('攻角分布')
+        box.setObjectName('gb_data')
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(4)
+
+        hint = QLabel('每行「展向位置, 最大攻角°」，首行可带标题；或从文件载入：')
+        hint.setStyleSheet('color: #888;')
+        lay.addWidget(hint)
+
+        self.aoa_edit = QPlainTextEdit()
+        self.aoa_edit.setPlainText(DEFAULT_AOA)
+        lay.addWidget(self.aoa_edit, 1)
+
+        row = QHBoxLayout()
+        load_btn = QPushButton('📂 载入 CSV/xlsx')
+        load_btn.clicked.connect(lambda: self._on_load_file(self.aoa_edit))
+        clear_btn = QPushButton('清空')
+        clear_btn.clicked.connect(lambda: self.aoa_edit.clear())
+        row.addWidget(load_btn)
+        row.addWidget(clear_btn)
+        row.addStretch()
+        lay.addLayout(row)
+        return box
+
     # ---------- 画图区 ----------
     def _build_plot_group(self):
         box = QGroupBox('图')
@@ -222,18 +288,54 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
+        # 工具行：保存图片
+        tool_row = QHBoxLayout()
+        tool_row.addStretch()
+        save_btn = QPushButton('💾 保存图片')
+        save_btn.clicked.connect(self._on_save_figure)
+        tool_row.addWidget(save_btn)
+        lay.addLayout(tool_row)
+
         self.fig = Figure(figsize=(7, 5), dpi=100)
-        self.ax_check = self.fig.add_subplot(211)
-        self.ax_span = self.fig.add_subplot(212)
+        self.ax_span = self.fig.add_subplot(111)
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         lay.addWidget(self.canvas, 1)
+        # 启用相交点标注的鼠标拖动（拖文字框，交点本身不动）
+        self._enable_annotation_drag()
         self._refresh_plot_placeholder()
         return box
 
+    def _enable_annotation_drag(self):
+        """让 ax 上的 Annotation 可用鼠标拖动。"""
+        self._drag_ann = None  # 正在拖的标注
+
+        def on_pick(event):
+            artist = event.artist
+            # matplotlib Annotation 是 Text 子类，带 get_xy 等
+            if hasattr(artist, 'get_xy') and hasattr(artist, 'set_position'):
+                self._drag_ann = artist
+            return True
+
+        def on_motion(event):
+            if self._drag_ann is None or event.xdata is None or event.ydata is None:
+                return
+            ann = self._drag_ann
+            # 切换到数据坐标定位（offset points 模式下 set_position 语义不同）
+            ann.set_position((event.xdata, event.ydata))
+            ann.xyann = (event.xdata, event.ydata)
+            self.canvas.draw_idle()
+
+        def on_release(event):
+            self._drag_ann = None
+
+        self.canvas.mpl_connect('pick_event', on_pick)
+        self.canvas.mpl_connect('motion_notify_event', on_motion)
+        self.canvas.mpl_connect('button_release_event', on_release)
+
     # ---------- 结果表 ----------
     def _build_result_group(self):
-        box = QGroupBox('结果（可复制）')
+        box = QGroupBox('结果')
         box.setObjectName('gb_data')
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 6, 8, 6)
@@ -271,7 +373,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
         t = self.profile_table
         r = t.rowCount()
         t.insertRow(r)
-        t.setItem(r, 0, QTableWidgetItem('0.30'))
+        t.setItem(r, 0, QTableWidgetItem('30'))
         t.setItem(r, 1, QTableWidgetItem('15.0'))
 
     def _on_profile_del(self):
@@ -285,23 +387,26 @@ class StallAssessmentPanel(BaseWorkerPanel):
             for r in rows:
                 t.removeRow(r)
 
-    def _on_load_file(self):
+    def _on_load_file(self, target_edit=None):
+        """载入两列数据文件回填到文本框。target_edit 默认 span_edit。"""
+        if target_edit is None:
+            target_edit = self.span_edit
         path, _ = QFileDialog.getOpenFileName(
-            self, '载入展向分布', self.input_dir,
+            self, '载入数据', self.input_dir,
             '数据文件 (*.csv *.txt *.xlsx *.xls);;所有文件 (*.*)',
         )
         if not path:
             return
         try:
-            positions, thickness = parse_span_file(path)
+            positions, values = parse_span_file(path)
         except Exception as e:
             self.log_area.append(f'⚠ 载入失败：{e}')
             return
-        # 回填到文本框（带表头）
-        lines = ['r/R, t/c']
-        for p, th in zip(positions, thickness):
-            lines.append(f'{p:.6g}, {th:.6g}')
-        self.span_edit.setPlainText('\n'.join(lines))
+        # 回填到文本框（无表头）
+        lines = []
+        for p, v in zip(positions, values):
+            lines.append(f'{p:.6g}, {v:.6g}')
+        target_edit.setPlainText('\n'.join(lines))
         self.log_area.append(f'✓ 已载入 {positions.size} 行：{path}')
 
     def _read_profile(self):
@@ -340,7 +445,18 @@ class StallAssessmentPanel(BaseWorkerPanel):
             self.log_area.append(f'⚠ 展向分布解析失败：{e}')
             return
 
-        # 3. 启动 Worker
+        # 3. 读攻角分布
+        text_aoa = self.aoa_edit.toPlainText().strip()
+        if not text_aoa:
+            self.log_area.append('⚠ 攻角分布为空，请粘贴数据或载入文件。')
+            return
+        try:
+            aoa_positions, aoa = parse_span_text(text_aoa)
+        except Exception as e:
+            self.log_area.append(f'⚠ 攻角分布解析失败：{e}')
+            return
+
+        # 4. 启动 Worker
         self.log_area.clear()
         self.progress.setValue(0)
         self.run_btn.setEnabled(False)
@@ -348,13 +464,16 @@ class StallAssessmentPanel(BaseWorkerPanel):
         self.open_btn.setEnabled(False)
 
         self._worker = StallAssessmentWorker(
-            profile, positions, thickness, self.out_dir,
+            profile, positions, thickness, aoa_positions, aoa, self.out_dir,
         )
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(lambda: self._on_finished(profile, positions, thickness))
+        self._worker.finished.connect(
+            lambda: self._on_finished(profile, positions, thickness,
+                                      aoa_positions, aoa))
         self._worker.start()
 
-    def _on_finished(self, profile, positions, thickness):
+    def _on_finished(self, profile, positions, thickness,
+                     aoa_positions, aoa):
         self.run_btn.setEnabled(True)
         self.run_btn.setText(self.RUN_BUTTON_TEXT)
         if self._worker.error:
@@ -370,14 +489,17 @@ class StallAssessmentPanel(BaseWorkerPanel):
             'positions': positions,
             'thickness': thickness,
             'span_alpha': np.asarray(span_alpha),
+            'aoa_positions': aoa_positions,
+            'aoa': aoa,
+            'crossings': self._worker.crossings or [],
         }
-        # 填结果表
+        # 填结果表（展向位置 / 相对厚度 / 失速攻角）
         self.result_table.setRowCount(positions.size)
         for i in range(positions.size):
             self.result_table.setItem(i, 0, QTableWidgetItem(f'{positions[i]:.6g}'))
             self.result_table.setItem(i, 1, QTableWidgetItem(f'{thickness[i]:.6g}'))
             self.result_table.setItem(i, 2, QTableWidgetItem(f'{span_alpha[i]:.4f}'))
-        # 刷新画图
+        # 刷新画图（双曲线 + 相交点）
         self._refresh_plot()
         self.open_btn.setEnabled(True)
 
@@ -398,30 +520,53 @@ class StallAssessmentPanel(BaseWorkerPanel):
     # 画布
     # ============================================================
     def _refresh_plot_placeholder(self):
-        for ax in (self.ax_check, self.ax_span):
-            ax.clear()
-            ax.text(0.5, 0.5, '点击「计算失速攻角」开始',
-                    ha='center', va='center', fontsize=12,
-                    transform=ax.transAxes)
-            ax.set_axis_off()
+        self.ax_span.clear()
+        self.ax_span.text(0.5, 0.5, '点击「计算失速攻角」开始',
+                          ha='center', va='center', fontsize=12,
+                          transform=self.ax_span.transAxes)
+        self.ax_span.set_axis_off()
         self.fig.tight_layout()
         self.canvas.draw()
 
     def _refresh_plot(self):
         if self._result is None:
             return
-        self.ax_check.clear()
         self.ax_span.clear()
-        plot_check(self.ax_check,
-                   self._result['profile'][:, 0],
-                   self._result['profile'][:, 1],
-                   self._result['thickness'],
-                   self._result['span_alpha'])
-        plot_span(self.ax_span,
-                  self._result['positions'],
-                  self._result['span_alpha'])
+        plot_span_compare(
+            self.ax_span,
+            self._result['positions'], self._result['span_alpha'],
+            self._result['aoa_positions'], self._result['aoa'],
+            crossings=self._result.get('crossings'),
+            span_pos=self._result['positions'],
+            span_thickness=self._result['thickness'],
+            std_thickness=self._result['profile'][:, 0],
+        )
         self.fig.tight_layout()
         self.canvas.draw()
+
+    def _on_save_figure(self):
+        """保存当前画布为 PNG。未计算时提示。"""
+        if self._result is None:
+            self.log_area.append('⚠ 请先计算，再保存图片。')
+            return
+        default_name = 'stall_assessment.png'
+        path, _ = QFileDialog.getSaveFileName(
+            self, '保存图片', str(__import__('os').path.join(self.out_dir, default_name)),
+            'PNG 图片 (*.png);;所有文件 (*.*)',
+        )
+        if not path:
+            return
+        try:
+            # 导出用宽图比例（横轴 > 纵轴），不影响 GUI 画布显示
+            orig_size = self.fig.get_size_inches()
+            self.fig.set_size_inches(10, 4.5)
+            self.fig.savefig(path, dpi=200, bbox_inches='tight')
+            # 恢复 GUI 画布尺寸
+            self.fig.set_size_inches(orig_size)
+            self.canvas.draw()
+            self.log_area.append(f'✓ 图片已保存：{path}')
+        except Exception as e:
+            self.log_area.append(f'⚠ 保存失败：{e}')
 
 
 # Qt 已在顶部导入（Qt.Horizontal 供 QSplitter 使用）。

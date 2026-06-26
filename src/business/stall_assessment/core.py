@@ -208,3 +208,132 @@ def plot_span(ax, positions, alpha):
     ax.set_title('失速攻角展向分布')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best')
+
+
+def find_intersections(stall_pos, stall_alpha, aoa_pos, aoa):
+    """求失速攻角曲线与实际攻角曲线的相交点。
+
+    两条曲线的展向位置可能不同，先用 PCHIP 把两者都插值到统一细密坐标，
+    再找差值符号反转点（线性插值近似交点横坐标）。
+
+    Args:
+        stall_pos (array): 失速攻角曲线的展向位置。
+        stall_alpha (array): 失速攻角值。
+        aoa_pos (array): 实际攻角曲线的展向位置。
+        aoa (array): 实际攻角值。
+
+    Returns:
+        list[float]: 相交点的展向位置（r/R），升序。可能为空。
+    """
+    stall_pos = np.asarray(stall_pos, dtype=float)
+    stall_alpha = np.asarray(stall_alpha, dtype=float)
+    aoa_pos = np.asarray(aoa_pos, dtype=float)
+    aoa = np.asarray(aoa, dtype=float)
+
+    # 统一到两条曲线共同覆盖的展向区间，细密采样
+    lo = max(stall_pos.min(), aoa_pos.min())
+    hi = min(stall_pos.max(), aoa_pos.max())
+    if hi <= lo:
+        return []
+    x_dense = np.linspace(lo, hi, 1000)
+    f_stall = PchipInterpolator(np.sort(stall_pos),
+                                stall_alpha[np.argsort(stall_pos)])(x_dense)
+    f_aoa = PchipInterpolator(np.sort(aoa_pos),
+                              aoa[np.argsort(aoa_pos)])(x_dense)
+
+    diff = f_stall - f_aoa
+    crossings = []
+    for i in range(len(diff) - 1):
+        if diff[i] == 0:
+            crossings.append(x_dense[i])
+        elif diff[i] * diff[i + 1] < 0:
+            # 线性插值近似零点
+            t = diff[i] / (diff[i] - diff[i + 1])
+            crossings.append(x_dense[i] + t * (x_dense[i + 1] - x_dense[i]))
+    return crossings
+
+
+def plot_span_compare(ax, stall_pos, stall_alpha, aoa_pos, aoa,
+                      crossings=None, span_pos=None, span_thickness=None,
+                      std_thickness=None):
+    """双曲线对比图：失速攻角 + 最大攻角，标出相交点 + 标准厚度展向位置。
+
+    横轴展向位置 r/R，纵轴攻角 (°)。
+    若提供 span_pos/span_thickness/std_thickness，则对每个标准厚度反查出 r/R，
+    在 x 轴上方用三角形标出，并标注厚度值。
+    调用方负责 ax.clear() 与 canvas.draw()。
+    """
+    # 失速攻角曲线（PCHIP 平滑，无标记点）
+    order_s = np.argsort(stall_pos)
+    xs_s = np.asarray(stall_pos)[order_s]
+    ys_s = np.asarray(stall_alpha)[order_s]
+    f_stall = PchipInterpolator(xs_s, ys_s)
+    x_dense_s = np.linspace(xs_s.min(), xs_s.max(), 300)
+    ax.plot(x_dense_s, f_stall(x_dense_s),
+            '-', color='#2ca02c', linewidth=2, label='失速攻角')
+
+    # 实际攻角曲线（PCHIP 平滑，无标记点）
+    order_a = np.argsort(aoa_pos)
+    xs_a = np.asarray(aoa_pos)[order_a]
+    ys_a = np.asarray(aoa)[order_a]
+    f_aoa = PchipInterpolator(xs_a, ys_a)
+    x_dense_a = np.linspace(xs_a.min(), xs_a.max(), 300)
+    ax.plot(x_dense_a, f_aoa(x_dense_a),
+            '-', color='#1f77b4', linewidth=2, label='最大攻角')
+
+    # 相交点标注
+    if crossings:
+        # 用插值取相交点处的攻角值做纵坐标
+        xs = np.array(crossings)
+        ys = f_stall(xs)
+        # 学术风：黑色实心圆 + 垂直引线到 x 轴，标注放上方
+        ax.scatter(xs, ys, marker='o', color='black', s=45, zorder=6,
+                   facecolors='black', label='相交点')
+        for xv, yv in zip(xs, ys):
+            # 垂直虚线引到 x 轴，标出 r/R 位置
+            ax.axvline(xv, color='black', linestyle=':', linewidth=0.8,
+                       alpha=0.5, zorder=1)
+            # 标注默认放右上方（离交点远，避免被曲线挡），带细引线指回交点
+            # picker=True 允许鼠标拖动文字（交点本身不动）
+            ax.annotate(f'r/R = {xv:.3f}', (xv, yv),
+                        textcoords='offset points', xytext=(18, 22),
+                        ha='left', fontsize=9, color='black',
+                        fontweight='bold', picker=True,
+                        arrowprops=dict(arrowstyle='-', color='gray',
+                                        lw=0.6, shrinkA=0, shrinkB=4))
+
+    # 标准厚度所在展向位置：反查 (厚度 → r/R)，在 x 轴上方标三角形 + 厚度值
+    if std_thickness is not None and span_pos is not None and span_thickness is not None:
+        span_pos = np.asarray(span_pos, dtype=float)
+        span_thickness = np.asarray(span_thickness, dtype=float)
+        std_thickness = np.asarray(std_thickness, dtype=float)
+        # 用 PCHIP 建 (厚度 → r/R) 反查器；要求厚度沿展向单调
+        order_t = np.argsort(span_thickness)
+        t_sorted = span_thickness[order_t]
+        p_sorted = span_pos[order_t]
+        # 去掉厚度重复点（PCHIP 要求 x 严格递增）
+        keep = np.concatenate(([True], np.diff(t_sorted) != 0))
+        t_sorted = t_sorted[keep]
+        p_sorted = p_sorted[keep]
+        if t_sorted.size >= 2:
+            inv = PchipInterpolator(t_sorted, p_sorted)
+            t_lo, t_hi = t_sorted.min(), t_sorted.max()
+            # 顶部 y 位置（数据坐标）：取 y 轴上限附近
+            ymin, ymax = ax.get_ylim()
+            top_y = ymin + (ymax - ymin) * 0.97
+            for tv in std_thickness:
+                if tv < t_lo or tv > t_hi:
+                    continue  # 超出展向厚度范围，跳过
+                rv = float(inv(tv))
+                ax.scatter([rv], [top_y], marker='v', color='purple',
+                           s=50, zorder=7, clip_on=False)
+                ax.annotate(f't={tv:g}', (rv, top_y),
+                            textcoords='offset points', xytext=(0, 8),
+                            ha='center', fontsize=8, color='purple',
+                            fontweight='bold', picker=True)
+
+    ax.set_xlabel('展向位置 (r/R)')
+    ax.set_ylabel('攻角 (°)')
+    ax.set_title('失速攻角 / 最大攻角 展向分布')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
