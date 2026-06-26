@@ -30,6 +30,7 @@ from tools.shape_design_panel import ShapeDesignPanel
 from tools.blade_converter_panel import BladeConverterPanel
 from tools.focus6_solver_panel import Focus6SolverPanel
 from tools.load_estimation_panel import LoadEstimationPanel
+from tools.stall_assessment_panel import StallAssessmentPanel
 from tools.curve_fitter_panel import CurveFitterPanel
 from tools.prebend_design_panel import PrebendDesignPanel
 from tools.catia_modeling_panel import CatiaModelingPanel
@@ -46,6 +47,7 @@ TOOLS = [
     ('🔧  叶片结构套件', BladeConverterPanel),
     ('🎯  FOCUS6', Focus6SolverPanel),
     ('📊  载荷预估', LoadEstimationPanel),
+    ('📏  失速评估', StallAssessmentPanel),
     ('📈  曲线拟合', CurveFitterPanel),
     ('📐  预弯设计', PrebendDesignPanel),
     ('🛠  3D 造型', CatiaModelingPanel),
