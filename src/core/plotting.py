@@ -195,17 +195,22 @@ def _clamp_ti_yaxis(ax, bin_df, percentile=95, buffer=0.15):
 
 
 def _value_at_bin(series, target_bin=10.0):
-    """从 series (index=bin_center) 取最接近 target_bin 的 bin 对应值。
+    """从 series (index=bin_center) 取 target_bin 对应值，缺失则返回 None。
 
     bin_center 通常按整数对齐（5, 6, ..., 10, 11），10.0 会精确命中；
-    若数据缺 10.0（如 bin_width=0.5 时只有 9.5/10.5），退化为最近邻。
+    若数据缺 10.0（如 bin_width=0.5 时只有 9.5/10.5），仅在容差 ≤ 0.5
+    时取最近邻；偏差更大说明该 bin 根本没数据，返回 None 以免用 9m/s
+    的 P90 冒充 10m/s（v0.3.17 修复）。
     """
     if series is None or series.empty:
         return None
     if target_bin in series.index:
         return series[target_bin]
     idx = np.abs(series.index - target_bin).argmin()
-    return series.iloc[idx]
+    nearest = series.index[idx]
+    if abs(nearest - target_bin) <= 0.5:
+        return series.iloc[idx]
+    return None
 
 
 def _distinct_colors(n):
