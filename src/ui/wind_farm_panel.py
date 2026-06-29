@@ -153,6 +153,11 @@ class WindFarmStatsPanel(BaseWorkerPanel):
         """wind_farm 特殊命名：data_dir 是基类 input_dir 的别名。"""
         return self.input_dir
 
+    @data_dir.setter
+    def data_dir(self, value):
+        """允许 _on_browse 等场景写入 data_dir（转发到基类 input_dir）。"""
+        self.input_dir = value
+
     @property
     def cache_path(self):
         """缓存文件路径：输出目录下 .cache.pkl。跟随 out_dir 自动更新。"""
