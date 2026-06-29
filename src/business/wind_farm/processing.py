@@ -73,13 +73,15 @@ def compute_ti_sliding(ws_clean, window_min=None, step_min=None, valid_ratio=Non
     ms_arr = np.full(n_windows, np.nan)
     if valid_mask.any():
         vw = windows[valid_mask]
+        # 整段都包进 errstate：np.where 急切求值 u_std/u_mean，对 u_mean=0 的窗口
+        # 会触发 divide warning（即便 speed_ok 最终用 NaN 覆盖）——v0.3.18 修复
         with np.errstate(invalid='ignore', divide='ignore'):
             u_mean = np.nanmean(vw, axis=1)
             u_std = np.nanstd(vw, axis=1, ddof=1)
-        ms_arr[valid_mask] = u_mean
-        # 风速阈值：u_mean > MIN_MEAN_SPEED 才计算 TI，否则置 NaN（与原逻辑一致）
-        speed_ok = u_mean > MIN_MEAN_SPEED
-        ti_arr[valid_mask] = np.where(speed_ok, u_std / u_mean, np.nan)
+            ms_arr[valid_mask] = u_mean
+            # 风速阈值：u_mean > MIN_MEAN_SPEED 才计算 TI，否则置 NaN（与原逻辑一致）
+            speed_ok = u_mean > MIN_MEAN_SPEED
+            ti_arr[valid_mask] = np.where(speed_ok, u_std / u_mean, np.nan)
 
     return ti_arr, ms_arr
 
