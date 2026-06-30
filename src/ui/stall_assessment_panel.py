@@ -225,6 +225,9 @@ class StallAssessmentPanel(BaseWorkerPanel):
         # profile_table 已填充 → 刷新 VG 表下拉（ vg_table 此时已创建）
         self._refresh_vg_thickness_options()
 
+        # 挂预览信号（所有输入改动 → 防抖重算 + 重绘）
+        self._connect_preview_signals()
+
         wrap = QWidget()
         wrap_lay = QVBoxLayout(wrap)
         wrap_lay.setContentsMargins(0, 0, 0, 0)
@@ -579,6 +582,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
             combo = self.vg_table.cellWidget(r, 0)
             if combo is None:
                 combo = self._make_vg_thickness_combo()
+                combo.currentTextChanged.connect(self._schedule_preview)
                 self.vg_table.setCellWidget(r, 0, combo)
             # 保留当前值（若在选项中）
             cur = combo.currentText()
@@ -607,6 +611,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
         # 默认选第一个（若有）
         if self._vg_thickness_options:
             combo.setCurrentText(f'{self._vg_thickness_options[0]:g}')
+        # combo 切换 → 触发预览
+        combo.currentTextChanged.connect(self._schedule_preview)
 
     def _on_vg_del(self):
         t = self.vg_table
@@ -669,6 +675,90 @@ class StallAssessmentPanel(BaseWorkerPanel):
             lines.append(f'{p:.6g}, {v:.6g}')
         target_edit.setPlainText('\n'.join(lines))
         self.log_area.append(f'✓ 已载入 {positions.size} 行：{path}')
+
+    # ============================================================
+    # 预览（输入变化时防抖重算 + 重绘，不写 CSV）
+    # ============================================================
+    def _connect_preview_signals(self):
+        """挂所有输入信号到防抖预览。必须在所有控件创建完后调用。"""
+        from PyQt5.QtCore import QTimer
+        if not hasattr(self, '_preview_timer'):
+            self._preview_timer = QTimer(self)
+            self._preview_timer.setSingleShot(True)
+            self._preview_timer.setInterval(300)
+            self._preview_timer.timeout.connect(self._compute_preview)
+        # 标准表 / VG 表 / 文本框 任何改动 → 防抖预览
+        self.profile_table.cellChanged.connect(self._schedule_preview)
+        self.vg_table.cellChanged.connect(self._schedule_preview)
+        self.span_edit.textChanged.connect(self._schedule_preview)
+        self.aoa_edit.textChanged.connect(self._schedule_preview)
+
+    def _schedule_preview(self, *_):
+        """输入变化 → 防抖 300ms 后跑预览。"""
+        # timer 在 _connect_preview_signals 里惰性创建
+        self._preview_timer.start()
+
+    def _compute_preview(self):
+        """预览：读输入 + 同步跑算法 + 缓存 self._result + 重绘。
+
+        - 不写 CSV、不写日志、不禁用按钮（轻量级，让用户即时看到效果）
+        - 输入非法（行数不足、解析失败）→ 静默返回，保留旧预览
+        - 任何异常都吞掉，避免输入编辑过程中弹错
+        """
+        import numpy as np
+        try:
+            # 1. 标准表
+            pts = self._read_profile()
+            if not pts or len(pts) < 2:
+                return
+            std_thickness = np.array([p[0] for p in pts], dtype=float)
+            std_alpha_std = np.array([p[1] for p in pts], dtype=float)
+            std_alpha_vg = {float(p[0]): float(p[2]) for p in pts if p[2] is not None}
+            if not std_alpha_vg:
+                std_alpha_vg = None
+
+            # 2. VG 段
+            vg_segments = self._read_vg_segments()
+
+            # 3. 展向分布
+            text = self.span_edit.toPlainText().strip()
+            if not text:
+                return
+            positions, thickness = parse_span_text(text)
+            positions, _ = normalize_positions(positions)
+
+            # 4. 攻角分布
+            text_aoa = self.aoa_edit.toPlainText().strip()
+            if not text_aoa:
+                return
+            aoa_positions, aoa = parse_span_text(text_aoa)
+            aoa_positions, _ = normalize_positions(aoa_positions)
+
+            # 5. 同步算
+            span_alpha, vg_active = compute_alpha_span(
+                positions, thickness, std_thickness, std_alpha_std,
+                std_alpha_vg=std_alpha_vg, vg_segments=vg_segments,
+            )
+            crossings = find_intersections(
+                positions, span_alpha, aoa_positions, aoa)
+        except Exception:
+            return  # 预览阶段静默
+
+        # 6. 缓存 + 重绘
+        self._result = {
+            'std_thickness': std_thickness,
+            'std_alpha_std': std_alpha_std,
+            'std_alpha_vg': std_alpha_vg,
+            'vg_segments': vg_segments,
+            'vg_active': np.asarray(vg_active, dtype=bool),
+            'positions': positions,
+            'thickness': thickness,
+            'span_alpha': np.asarray(span_alpha),
+            'aoa_positions': aoa_positions,
+            'aoa': aoa,
+            'crossings': crossings or [],
+        }
+        self._refresh_plot()
 
     # ============================================================
     # 运行

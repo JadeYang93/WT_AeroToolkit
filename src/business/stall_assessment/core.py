@@ -214,12 +214,20 @@ def pick_alpha(thickness, z, alpha_std_map, alpha_vg_map, vg_segments):
 
 def compute_alpha_span(positions, thickness, std_thickness, std_alpha_std,
                        std_alpha_vg=None, vg_segments=None):
-    """带 VG 支持的失速攻角展向插值。
+    """带 VG 支持的失速攻角展向插值（标准厚度点 VG 身份固定 → 整表连续）。
 
-    核心逻辑：对每个 z，找其厚度所在的标准厚度区间 [t_a, t_b]，分别查 t_a、t_b 在
-    z 处用标还是 VG 攻角（取决于 VG 安装范围），再按相对厚度做两点线性插值。
+    核心模型（用户定义）：
+    VG 段按「展向位置 z」作用，且 z 通过展向厚度分布映射到厚度。每个标准厚度点
+    t 的 VG 身份是**固定的**——取决于该厚度在展向分布里出现的位置 z_t 是否落在
+    任何 VG 段内：
+      - z_t ∈ VG 段 → 这个厚度点用 α_VG
+      - z_t ∉ VG 段 → 这个厚度点用 α_std
+    然后构建一张统一的有效标准表（每个厚度点按身份取值），整表 PCHIP 插值出一条
+    连续曲线。因为插值源连续，结果天然无阶跃。
 
-    VG 安装范围空 / VG 攻角表空 → 退化为原 PCHIP 逻辑（兼容路径）。
+    例：VG 段 z∈[0.05,0.15]，厚度 40 出现在 z=0.1（段内→40VG），厚度 30 出现在
+    z=0.2（段外→30标）。则任何查询 z 落在 [40,30] 区间，都用 40VG 与 30标 插值，
+    全展向一致，无跳变。
 
     Args:
         positions (array): 展向位置 r/R，长度 N。
@@ -228,9 +236,10 @@ def compute_alpha_span(positions, thickness, std_thickness, std_alpha_std,
         std_alpha_std (array): 标准厚度的标失速攻角，长度 M。
         std_alpha_vg (dict or None): {thickness: alpha_vg}，VG 列非空的子集。
         vg_segments (list[tuple] or None): [(thickness, z_start, z_end), ...]。
+            z_start/z_end 是 VG 安装的展向范围。
     Returns:
         (alpha_arr, vg_active): 长度 N 的失速攻角数组 + 长度 N 的布尔数组
-            (该 z 是否落在任何 VG 安装范围内，不论厚度)。
+            (该 z 是否落在 VG 安装段内，供 UI 画阴影)。
     """
     # 兼容路径：无 VG 配置 → 用原 PCHIP
     if (not vg_segments) or (not std_alpha_vg):
@@ -239,32 +248,52 @@ def compute_alpha_span(positions, thickness, std_thickness, std_alpha_std,
 
     positions = np.asarray(positions, dtype=float)
     thickness = np.asarray(thickness, dtype=float)
-    alpha_arr = np.empty(len(positions), dtype=float)
-    vg_active = np.zeros(len(positions), dtype=bool)
+    std_thickness = np.asarray(std_thickness, dtype=float)
+    std_alpha_std = np.asarray(std_alpha_std, dtype=float)
+    n = len(positions)
 
-    alpha_std_map = {float(t): float(a)
-                     for t, a in zip(std_thickness, std_alpha_std)}
-    # 预处理 VG 段（确保 float）
-    seg_list = [(float(t), float(zs), float(ze))
-                for t, zs, ze in vg_segments]
+    # ---- 1. 建展向「厚度 → z」反查器（厚度沿展向单调递减，可反查）----
+    # 用 PCHIP，x=厚度（升序），y=展向位置
+    order = np.argsort(thickness)
+    t_asc = thickness[order]
+    z_asc = positions[order]
+    # 去掉厚度重复点（PCHIP 要求 x 严格递增）
+    keep = np.concatenate(([True], np.diff(t_asc) != 0))
+    t_asc, z_asc = t_asc[keep], z_asc[keep]
+    f_thickness_to_z = PchipInterpolator(t_asc, z_asc)
+    t_lo, t_hi = float(t_asc.min()), float(t_asc.max())
 
-    for i in range(len(positions)):
-        z = positions[i]
-        t_z = thickness[i]
-        t_high, t_low = find_thickness_interval(t_z, std_thickness)
-        alpha_a = pick_alpha(t_high, z, alpha_std_map, std_alpha_vg, seg_list)
-        alpha_b = pick_alpha(t_low, z, alpha_std_map, std_alpha_vg, seg_list)
-        if t_high != t_low:
-            alpha_arr[i] = alpha_a + (alpha_b - alpha_a) * \
-                (t_high - t_z) / (t_high - t_low)
+    def _z_of_thickness(t):
+        """厚度 t 在展向上的位置 z（夹紧到展向厚度范围，不外推）。"""
+        return float(f_thickness_to_z(min(max(t, t_lo), t_hi)))
+
+    # ---- 2. 确定每个标准厚度点的 VG 身份，构建有效标准表 ----
+    seg_list = [(float(zs), float(ze)) for _, zs, ze in vg_segments]
+
+    def _in_any_vg_segment(z):
+        for zs, ze in seg_list:
+            if zs - 1e-9 <= z <= ze + 1e-9:
+                return True
+        return False
+
+    eff_alpha = []
+    for t, a_std in zip(std_thickness, std_alpha_std):
+        z_t = _z_of_thickness(float(t))
+        if _in_any_vg_segment(z_t) and float(t) in std_alpha_vg:
+            eff_alpha.append(float(std_alpha_vg[float(t)]))
         else:
-            # 极端特例：厚度区间退化为一点（用户配置不当）→ 直接取 a 端
-            alpha_arr[i] = alpha_a
-        # vg_active：z 是否落在任何 VG 安装段内（不论厚度），同样用 1e-9 容差
-        for seg_t, seg_zs, seg_ze in seg_list:
-            if (seg_zs - 1e-9) <= z <= (seg_ze + 1e-9):
-                vg_active[i] = True
-                break
+            eff_alpha.append(float(a_std))
+    eff_alpha = np.array(eff_alpha, dtype=float)
+
+    # ---- 3. 整表 PCHIP 插值（厚度 → 有效攻角），全程连续 ----
+    order2 = np.argsort(std_thickness)
+    f_eff = PchipInterpolator(std_thickness[order2], eff_alpha[order2])
+    alpha_arr = f_eff(thickness)
+
+    # ---- 4. vg_active：查询 z 是否在 VG 段内（供 UI 画阴影）----
+    vg_active = np.zeros(n, dtype=bool)
+    for zs, ze in seg_list:
+        vg_active |= (positions >= zs - 1e-9) & (positions <= ze + 1e-9)
 
     return alpha_arr, vg_active
 
