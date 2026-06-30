@@ -25,7 +25,6 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPlainTextEdit, QTextEdit, QSplitter, QSizePolicy,
-    QComboBox,
 )
 
 # matplotlib 嵌入式画布（导入 plotting 触发 Agg 后端 + 中文字体配置，
@@ -167,8 +166,6 @@ class StallAssessmentPanel(BaseWorkerPanel):
         self._worker = None
         # 上一次成功结果（供画图复用）
         self._result = None  # dict: std_thickness/std_alpha_std/...
-        # VG 表下拉可选厚度列表（在 _build_vg_group 中初始化）
-        self._vg_thickness_options = []
         super().__init__()
         # 基类创建了 run_btn 但未自动连接点击信号，这里连上
         self.run_btn.clicked.connect(self._on_run)
@@ -222,8 +219,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
         # 防止用户拖到过窄：保留交互可调性，但下限为 200px
         outer_split.setChildrenCollapsible(False)
 
-        # profile_table 已填充 → 刷新 VG 表下拉（ vg_table 此时已创建）
-        self._refresh_vg_thickness_options()
+        # profile_table 已填充（vg_table 此时已创建）
 
         # 挂预览信号（所有输入改动 → 防抖重算 + 重绘）
         self._connect_preview_signals()
@@ -326,15 +322,15 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        hint = QLabel('每行：装了 VG 的标准厚度（下拉，来自标准表 VG 列非空项）'
-                      '+ VG 起/止 z (r/R)。空表 = 不使用 VG（走 PCHIP）。')
+        hint = QLabel('每行一组 VG 安装段：VG 起/止 z (r/R)。'
+                      '空表 = 不使用 VG（走 PCHIP）。')
         hint.setStyleSheet('color: #888;')
         lay.addWidget(hint)
 
         self.vg_table = QTableWidget()
-        self.vg_table.setColumnCount(3)
+        self.vg_table.setColumnCount(2)
         self.vg_table.setHorizontalHeaderLabels(
-            ['标准厚度', 'VG 起 z (r/R)', 'VG 止 z (r/R)'])
+            ['VG 起 z (r/R)', 'VG 止 z (r/R)'])
         self.vg_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.vg_table.verticalHeader().setVisible(False)
         lay.addWidget(self.vg_table)
@@ -499,8 +495,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
         t.blockSignals(False)
 
     def _on_profile_cell_changed(self, *_):
-        """标准表任意单元格改动 → 同步 VG 表下拉。"""
-        self._refresh_vg_thickness_options()
+        """标准表任意单元格改动 → 触发预览重算。"""
+        pass  # 预览由 _connect_preview_signals 统一驱动
 
     def _on_profile_add(self):
         t = self.profile_table
@@ -511,7 +507,6 @@ class StallAssessmentPanel(BaseWorkerPanel):
         t.setItem(r, 1, QTableWidgetItem('15.0'))
         t.setItem(r, 2, QTableWidgetItem(''))  # VG 默认空
         t.blockSignals(False)
-        self._refresh_vg_thickness_options()
 
     def _on_profile_del(self):
         t = self.profile_table
@@ -525,7 +520,6 @@ class StallAssessmentPanel(BaseWorkerPanel):
             for r in rows:
                 t.removeRow(r)
         t.blockSignals(False)
-        self._refresh_vg_thickness_options()
 
     def _read_profile(self):
         """从标准表读 list[(厚度, 标攻角, VG攻角 or None)]。返回 None 表示无有效行。"""
@@ -554,65 +548,13 @@ class StallAssessmentPanel(BaseWorkerPanel):
         return pts
 
     # ---------- VG 表 ----------
-    def _make_vg_thickness_combo(self):
-        """构造标准厚度下拉：选项 = profile_table 中 VG 列非空的厚度。"""
-        combo = QComboBox()
-        combo.addItems([f'{t:g}' for t in self._vg_thickness_options])
-        return combo
-
-    def _refresh_vg_thickness_options(self):
-        """根据 profile_table 当前 VG 列非空的厚度，刷新 VG 表所有行的下拉选项。
-
-        保留当前选中值（若仍在新选项中），否则清空。
-        """
-        if not hasattr(self, 'vg_table'):
-            return
-        profile = self._read_profile() or []
-        # VG 列非空的厚度（去重保序）
-        seen = set()
-        vg_thicknesses = []
-        for p in profile:
-            if p[2] is not None and p[0] not in seen:
-                seen.add(p[0])
-                vg_thicknesses.append(p[0])
-        self._vg_thickness_options = vg_thicknesses
-
-        opt_strs = [f'{t:g}' for t in vg_thicknesses]
-        for r in range(self.vg_table.rowCount()):
-            combo = self.vg_table.cellWidget(r, 0)
-            if combo is None:
-                combo = self._make_vg_thickness_combo()
-                combo.currentTextChanged.connect(self._schedule_preview)
-                self.vg_table.setCellWidget(r, 0, combo)
-            # 保留当前值（若在选项中）
-            cur = combo.currentText()
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(opt_strs)
-            if cur:
-                try:
-                    cur_f = float(cur)
-                    if any(abs(t - cur_f) < 1e-9 for t in vg_thicknesses):
-                        combo.setCurrentText(f'{cur_f:g}')
-                except ValueError:
-                    pass
-            combo.blockSignals(False)
-
     def _on_vg_add(self):
         t = self.vg_table
         r = t.rowCount()
         t.insertRow(r)
         # 默认 z 范围 0~1
-        t.setItem(r, 1, QTableWidgetItem('0.0'))
-        t.setItem(r, 2, QTableWidgetItem('1.0'))
-        # 下拉
-        combo = self._make_vg_thickness_combo()
-        t.setCellWidget(r, 0, combo)
-        # 默认选第一个（若有）
-        if self._vg_thickness_options:
-            combo.setCurrentText(f'{self._vg_thickness_options[0]:g}')
-        # combo 切换 → 触发预览
-        combo.currentTextChanged.connect(self._schedule_preview)
+        t.setItem(r, 0, QTableWidgetItem('0.0'))
+        t.setItem(r, 1, QTableWidgetItem('1.0'))
 
     def _on_vg_del(self):
         t = self.vg_table
@@ -628,30 +570,28 @@ class StallAssessmentPanel(BaseWorkerPanel):
     def _read_vg_segments(self):
         """从 VG 安装表读 [(thickness, z_start, z_end), ...]。
 
+        thickness 字段占位填 0（当前算法按 z 判定，不使用 thickness）。
         返回 list（可能为空，表示无 VG，触发 PCHIP 兼容路径）。
         """
         t = self.vg_table
         segs = []
         for r in range(t.rowCount()):
-            combo = t.cellWidget(r, 0)
+            item0 = t.item(r, 0)
             item1 = t.item(r, 1)
-            item2 = t.item(r, 2)
-            if combo is None or item1 is None or item2 is None:
+            if item0 is None or item1 is None:
                 continue
-            th_txt = combo.currentText().strip()
-            zs_txt = item1.text().strip()
-            ze_txt = item2.text().strip()
-            if not th_txt or not zs_txt or not ze_txt:
+            zs_txt = item0.text().strip()
+            ze_txt = item1.text().strip()
+            if not zs_txt or not ze_txt:
                 continue
             try:
-                th = float(th_txt)
                 zs = float(zs_txt)
                 ze = float(ze_txt)
             except ValueError:
                 continue
             if ze < zs:
                 zs, ze = ze, zs
-            segs.append((th, zs, ze))
+            segs.append((0.0, zs, ze))  # thickness 占位，算法不用
         return segs
 
     def _on_load_file(self, target_edit=None):
