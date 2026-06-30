@@ -40,6 +40,7 @@ from business.stall_assessment import (
     find_intersections, plot_span_compare,
     compute_alpha_span,
 )
+from business.stall_assessment.params_store import load_inputs, save_inputs
 
 
 # 默认标准翼型示例（厚度%, 标失速攻角°, VG 失速攻角° or None）
@@ -48,8 +49,8 @@ DEFAULT_PROFILE = [
     (18, 15.5, None),
     (21, 12.0, None),
     (25, 12.0, None),
-    (30, 13.0, 15.0),
-    (40, 10.0, 12.0),
+    (30, 13.0, 16.0),
+    (40, 10.0, 13.5),
     (100, 0.0, None),
 ]
 
@@ -120,6 +121,33 @@ class StallAssessmentWorker(QThread):
             self.progress.emit(40, f'最大攻角分布：{self.aoa_positions.size} 站')
             n_vg = len(self.vg_segments) if self.vg_segments else 0
             self.progress.emit(50, f'VG 安装段：{n_vg} 段')
+            # VG 诊断：打印 VG 攻角字典 + 各标准厚度点的 VG 身份
+            if self.std_alpha_vg:
+                vg_info = ', '.join(f't={t:g}→{a:g}°'
+                                    for t, a in self.std_alpha_vg.items())
+                self.progress.emit(52, f'  VG 攻角配置：{vg_info}')
+                seg_str = ', '.join(f'[{zs:g},{ze:g}]'
+                                    for _, zs, ze in self.vg_segments)
+                self.progress.emit(52, f'  VG 段：{seg_str}')
+                # 打印每个标准厚度点的展向位置 z_t 与 VG 身份判定（诊断用）
+                import numpy as _np
+                from scipy.interpolate import PchipInterpolator as _PCH
+                _order = _np.argsort(self.thickness)
+                _t_asc = self.thickness[_order]
+                _z_asc = self.positions[_order]
+                _keep = _np.concatenate(([True], _np.diff(_t_asc) != 0))
+                _f = _PCH(_t_asc[_keep], _z_asc[_keep])
+                _t_lo, _t_hi = float(_t_asc.min()), float(_t_asc.max())
+                for _t in self.std_thickness:
+                    _zt = float(_f(min(max(float(_t), _t_lo), _t_hi)))
+                    _in = any(zs-1e-9 <= _zt <= ze+1e-9
+                              for _, zs, ze in self.vg_segments)
+                    _has_vg = float(_t) in self.std_alpha_vg
+                    _use = 'VG' if (_in and _has_vg) else '标'
+                    self.progress.emit(52,
+                        f'  t={_t:g} → z_t={_zt:.3f}  在VG段={_in}  用{_use}攻角')
+            else:
+                self.progress.emit(52, '  未读到 VG 攻角（标准表 VG 列空）→ 走 PCHIP')
             self.progress.emit(55, '执行展向失速攻角计算（含 VG 逻辑）...')
             span_alpha, vg_active = compute_alpha_span(
                 self.positions, self.thickness,
@@ -169,6 +197,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
         super().__init__()
         # 基类创建了 run_btn 但未自动连接点击信号，这里连上
         self.run_btn.clicked.connect(self._on_run)
+        # 恢复上次保存的输入
+        self._restore_inputs()
 
     # ------------------------------------------------------------
     # 主体内容（基类会自动追加 exec_bar）
@@ -701,6 +731,87 @@ class StallAssessmentPanel(BaseWorkerPanel):
         self._refresh_plot()
 
     # ============================================================
+    # 输入持久化（记忆上次填入的数据）
+    # ============================================================
+    def _restore_inputs(self):
+        """启动时从 配置/stall_assessment_inputs.json 恢复上次的输入。"""
+        data = load_inputs()
+        if data is None:
+            return  # 无存档，用代码里的默认值
+        try:
+            # 标准翼型表
+            profile = data.get('profile')
+            if isinstance(profile, list) and profile:
+                t = self.profile_table
+                t.setRowCount(len(profile))
+                for r, row in enumerate(profile):
+                    # row = [t, alpha_std, alpha_vg_or_None]
+                    t.setItem(r, 0, QTableWidgetItem(f'{row[0]:g}'))
+                    t.setItem(r, 1, QTableWidgetItem(f'{row[1]:g}'))
+                    vg = row[2] if len(row) > 2 and row[2] is not None else ''
+                    t.setItem(r, 2, QTableWidgetItem(f'{vg:g}' if vg != '' else ''))
+            # 展向分布 / 最大攻角分布
+            span_text = data.get('span_text')
+            if isinstance(span_text, str) and span_text:
+                self.span_edit.setPlainText(span_text)
+            aoa_text = data.get('aoa_text')
+            if isinstance(aoa_text, str) and aoa_text:
+                self.aoa_edit.setPlainText(aoa_text)
+            # VG 安装段
+            vg_segs = data.get('vg_segments')
+            if isinstance(vg_segs, list) and vg_segs:
+                t = self.vg_table
+                t.setRowCount(len(vg_segs))
+                for r, seg in enumerate(vg_segs):
+                    t.setItem(r, 0, QTableWidgetItem(f'{seg[0]:g}'))
+                    t.setItem(r, 1, QTableWidgetItem(f'{seg[1]:g}'))
+        except Exception:
+            pass  # 恢复失败不影响启动，用默认值
+
+    def _persist_inputs(self):
+        """把当前输入保存到 配置/stall_assessment_inputs.json。"""
+        try:
+            # 标准表 → [[t, alpha_std, alpha_vg_or_None], ...]
+            profile = []
+            for r in range(self.profile_table.rowCount()):
+                items = [self.profile_table.item(r, c) for c in range(3)]
+                if items[0] is None or items[1] is None:
+                    continue
+                try:
+                    t = float(items[0].text())
+                    a = float(items[1].text())
+                except ValueError:
+                    continue
+                vg = None
+                if items[2] is not None:
+                    txt = items[2].text().strip()
+                    if txt:
+                        try:
+                            vg = float(txt)
+                        except ValueError:
+                            pass
+                profile.append([t, a, vg])
+            # VG 段 → [[zs, ze], ...]
+            vg_segs = []
+            for r in range(self.vg_table.rowCount()):
+                i0, i1 = self.vg_table.item(r, 0), self.vg_table.item(r, 1)
+                if i0 is None or i1 is None:
+                    continue
+                try:
+                    zs, ze = float(i0.text()), float(i1.text())
+                except ValueError:
+                    continue
+                vg_segs.append([zs, ze])
+            save_inputs({
+                'profile': profile,
+                'span_text': self.span_edit.toPlainText(),
+                'aoa_text': self.aoa_edit.toPlainText(),
+                'vg_segments': vg_segs,
+            })
+        except Exception:
+            pass  # 保存失败静默，不影响使用
+
+    # ============================================================
     # 运行
     # ============================================================
     def _on_run(self):
@@ -760,6 +871,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
         self.run_btn.setEnabled(False)
         self.run_btn.setText('计算中...')
         self.open_btn.setEnabled(False)
+        # 启动计算前先持久化输入（校验已通过，输入是有意义的）
+        self._persist_inputs()
 
         self._worker = StallAssessmentWorker(
             std_thickness, std_alpha_std, std_alpha_vg, vg_segments,
