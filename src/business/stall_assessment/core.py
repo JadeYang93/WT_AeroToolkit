@@ -167,19 +167,129 @@ def interpolate(thickness, alpha, span_thickness):
 
 
 # ============================================================
+# VG 支持：按相对厚度区间两端点的「标/VG」身份做两点线性插值
+# ============================================================
+def find_thickness_interval(t_z, std_thickness):
+    """找 t_z 落在哪两个相邻标准厚度之间。
+
+    Args:
+        t_z (float): 当前 z 的相对厚度。
+        std_thickness (array-like): 标准厚度数组（不必有序，函数内排序）。
+    Returns:
+        (t_high, t_low): 两个相邻标准厚度，t_high >= t_z >= t_low。
+    Raises:
+        ValueError: t_z 超出标准表范围。
+    """
+    sorted_t = np.sort(np.asarray(std_thickness, dtype=float))[::-1]  # 降序
+    if t_z > sorted_t[0] + 1e-9 or t_z < sorted_t[-1] - 1e-9:
+        raise ValueError(
+            f'相对厚度 {t_z:.4f} 超出标准表范围 '
+            f'[{sorted_t[-1]:.4f}, {sorted_t[0]:.4f}]，请补全标准翼型表。'
+        )
+    for i in range(len(sorted_t) - 1):
+        if sorted_t[i] >= t_z >= sorted_t[i + 1]:
+            return float(sorted_t[i]), float(sorted_t[i + 1])
+    return float(sorted_t[-2]), float(sorted_t[-1])
+
+
+def pick_alpha(thickness, z, alpha_std_map, alpha_vg_map, vg_segments):
+    """标准厚度 `thickness` 在 z 处的失速攻角：VG 安装范围内 → α_VG，否则 α_std。
+
+    Args:
+        thickness (float): 标准厚度（如 30、40）。
+        z (float): 展向位置 r/R。
+        alpha_std_map (dict): {thickness: alpha_std}。
+        alpha_vg_map (dict): {thickness: alpha_vg}（VG 列非空的子集）。
+        vg_segments (list[tuple]): [(thickness, z_start, z_end), ...]。
+    Returns:
+        float: 失速攻角。
+    """
+    # 用 1e-9 容差比较 z 边界，避免 np.linspace 浮点误差导致边界点漏判
+    for seg_t, seg_zs, seg_ze in vg_segments:
+        if (abs(seg_t - thickness) < 1e-9
+                and (seg_zs - 1e-9) <= z <= (seg_ze + 1e-9)):
+            return alpha_vg_map[thickness]
+    return alpha_std_map[thickness]
+
+
+def compute_alpha_span(positions, thickness, std_thickness, std_alpha_std,
+                       std_alpha_vg=None, vg_segments=None):
+    """带 VG 支持的失速攻角展向插值。
+
+    核心逻辑：对每个 z，找其厚度所在的标准厚度区间 [t_a, t_b]，分别查 t_a、t_b 在
+    z 处用标还是 VG 攻角（取决于 VG 安装范围），再按相对厚度做两点线性插值。
+
+    VG 安装范围空 / VG 攻角表空 → 退化为原 PCHIP 逻辑（兼容路径）。
+
+    Args:
+        positions (array): 展向位置 r/R，长度 N。
+        thickness (array): 每个展向位置的相对厚度，长度 N。
+        std_thickness (array): 标准厚度数组，长度 M。
+        std_alpha_std (array): 标准厚度的标失速攻角，长度 M。
+        std_alpha_vg (dict or None): {thickness: alpha_vg}，VG 列非空的子集。
+        vg_segments (list[tuple] or None): [(thickness, z_start, z_end), ...]。
+    Returns:
+        (alpha_arr, vg_active): 长度 N 的失速攻角数组 + 长度 N 的布尔数组
+            (该 z 是否落在任何 VG 安装范围内，不论厚度)。
+    """
+    # 兼容路径：无 VG 配置 → 用原 PCHIP
+    if (not vg_segments) or (not std_alpha_vg):
+        alpha = interpolate(std_thickness, std_alpha_std, thickness)
+        return alpha, np.zeros(len(positions), dtype=bool)
+
+    positions = np.asarray(positions, dtype=float)
+    thickness = np.asarray(thickness, dtype=float)
+    alpha_arr = np.empty(len(positions), dtype=float)
+    vg_active = np.zeros(len(positions), dtype=bool)
+
+    alpha_std_map = {float(t): float(a)
+                     for t, a in zip(std_thickness, std_alpha_std)}
+    # 预处理 VG 段（确保 float）
+    seg_list = [(float(t), float(zs), float(ze))
+                for t, zs, ze in vg_segments]
+
+    for i in range(len(positions)):
+        z = positions[i]
+        t_z = thickness[i]
+        t_high, t_low = find_thickness_interval(t_z, std_thickness)
+        alpha_a = pick_alpha(t_high, z, alpha_std_map, std_alpha_vg, seg_list)
+        alpha_b = pick_alpha(t_low, z, alpha_std_map, std_alpha_vg, seg_list)
+        if t_high != t_low:
+            alpha_arr[i] = alpha_a + (alpha_b - alpha_a) * \
+                (t_high - t_z) / (t_high - t_low)
+        else:
+            # 极端特例：厚度区间退化为一点（用户配置不当）→ 直接取 a 端
+            alpha_arr[i] = alpha_a
+        # vg_active：z 是否落在任何 VG 安装段内（不论厚度），同样用 1e-9 容差
+        for seg_t, seg_zs, seg_ze in seg_list:
+            if (seg_zs - 1e-9) <= z <= (seg_ze + 1e-9):
+                vg_active[i] = True
+                break
+
+    return alpha_arr, vg_active
+
+
+# ============================================================
 # 输出
 # ============================================================
 def save_csv(positions, thickness, alpha, output_dir,
-             filename='stall_alpha_span.csv'):
-    """写展向失速攻角分布到 CSV（三列：位置, 相对厚度, 失速攻角）。"""
+             vg_active=None, filename='stall_alpha_span.csv'):
+    """写展向失速攻角分布到 CSV。
+
+    默认三列：位置 / 相对厚度 / 失速攻角。
+    若传入 vg_active（一维布尔/0-1 数组），追加 `vg_active` 列（1.0/0.0）。
+    """
     os.makedirs(output_dir, exist_ok=True)
-    data = np.column_stack([positions, thickness, alpha])
     out_path = os.path.join(output_dir, filename)
-    np.savetxt(
-        out_path, data, delimiter=',',
-        header='span_position,relative_thickness,stall_alpha_deg',
-        comments='', fmt='%.6f',
-    )
+    if vg_active is None:
+        data = np.column_stack([positions, thickness, alpha])
+        header = 'span_position,relative_thickness,stall_alpha_deg'
+    else:
+        vg_col = np.asarray(vg_active).astype(float).reshape(-1, 1)
+        data = np.column_stack([positions, thickness, alpha, vg_col])
+        header = 'span_position,relative_thickness,stall_alpha_deg,vg_active'
+    np.savetxt(out_path, data, delimiter=',', header=header,
+               comments='', fmt='%.6f')
     return out_path
 
 
