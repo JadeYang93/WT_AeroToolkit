@@ -1441,6 +1441,12 @@ class CurveFitterPanel(QWidget):
         # v0.3.12: 每个 Tab 内自带日志栏（位于右侧参数面板底部）。
         # 全段拟合 Tab 移除"保存"按钮（导出功能移交分段复用 Tab）。
         self.tabs = QTabWidget()
+        # 页签铺满栏宽 + 选中色块，与 catia_modeling 面板风格对齐
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabPosition(QTabWidget.North)
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setDrawBase(False)
+        self.tabs.setStyleSheet(self._tab_qss())
         self.curve_widget = CurveFitterWidget()
         self.tabs.addTab(self.curve_widget, '📈  全段拟合')
         # 分段复用 widget 需要拿到 shape_design 的 STAGE-1 输出目录作为默认定位
@@ -1452,6 +1458,37 @@ class CurveFitterPanel(QWidget):
         )
         self.tabs.addTab(self.seg_widget, '✂  分段复用 (C2)')
         outer.addWidget(self.tabs, 1)
+
+    def _tab_qss(self):
+        """子 Tab 样式：深钢蓝底 + 选中天蓝实心，对齐 catia_modeling / 主导航风格。"""
+        return """
+        QTabBar { background: #1e3a5f; }
+        QTabBar::tab {
+            background: #1e3a5f;
+            color: #94a3b8;
+            font-size: 14px;
+            font-weight: 600;
+            padding: 16px 28px;
+            margin: 0;
+            border: none;
+            border-left: 1px solid #2d4a6f;
+        }
+        QTabBar::tab:first { border-left: none; }
+        QTabBar::tab:selected {
+            background: #0ea5e9;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        QTabBar::tab:hover:!selected {
+            background: #234870;
+            color: #ffffff;
+        }
+        QTabWidget::pane {
+            border: 1px solid #e5e7eb;
+            border-top: none;
+            background: #ffffff;
+        }
+        """
 
     def _build_banner(self):
         banner = QWidget()
