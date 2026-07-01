@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QMessageBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QScrollArea, QFrame, QSizePolicy, QPlainTextEdit, QTextEdit,
-    QComboBox,
+    QComboBox, QCheckBox,
 )
 
 # matplotlib 嵌入（import plotting 触发中文字体配置）
@@ -67,6 +67,9 @@ class SegmentedFitterWidget(QWidget):
         # 拖动状态
         self._dragging_idx: int | None = None
 
+        # 基线（仿全段拟合）：保存某次拟合的合并曲线作为对比基准
+        self._baseline: dict | None = None  # {'x': arr, 'y': arr, 'visible': bool}
+
         # 防抖：参数 spinbox / 表格连续改动时，停 200ms 才重拟合
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
@@ -95,6 +98,28 @@ class SegmentedFitterWidget(QWidget):
         plot_box.setObjectName('gb_data')
         plot_lay = QVBoxLayout(plot_box)
         plot_lay.setContentsMargins(8, 6, 8, 6)
+
+        # 基线工具行（顶部）
+        bl_row = QHBoxLayout()
+        bl_row.setSpacing(6)
+        self.baseline_pin_btn = QPushButton('📌 固定基线')
+        self.baseline_pin_btn.setToolTip(
+            '把当前分段拟合合并曲线保存为基线（灰色虚线显示），\n'
+            '后续编辑 R1/R2/控制点/方法后可对比变化')
+        self.baseline_pin_btn.clicked.connect(self._on_pin_baseline)
+        bl_row.addWidget(self.baseline_pin_btn)
+        self.baseline_show_chk = QCheckBox('显示基线')
+        self.baseline_show_chk.setChecked(True)
+        self.baseline_show_chk.setEnabled(False)
+        self.baseline_show_chk.stateChanged.connect(self._on_baseline_visibility_changed)
+        bl_row.addWidget(self.baseline_show_chk)
+        self.baseline_clear_btn = QPushButton('🗑 清除基线')
+        self.baseline_clear_btn.setEnabled(False)
+        self.baseline_clear_btn.clicked.connect(self._on_clear_baseline)
+        bl_row.addWidget(self.baseline_clear_btn)
+        bl_row.addStretch()
+        plot_lay.addLayout(bl_row)
+
         self.fig, self.ax = self._make_figure()
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setParent(self)
@@ -268,8 +293,6 @@ class SegmentedFitterWidget(QWidget):
         self.nctrl_spin.valueChanged.connect(self._on_nctrl_changed)
         gf.addWidget(self.nctrl_spin, 5, 1)
 
-        v.addWidget(fit_box)
-
         # ---- 数据点表 ----
         ctrl_box = QGroupBox('中段数据点（拖动画布红点 / 编辑表格）')
         ctrl_box.setObjectName('gb_data')
@@ -303,12 +326,12 @@ class SegmentedFitterWidget(QWidget):
             ),
         )
 
-        v.addWidget(ctrl_box, 1)
-
-        # ---- 分段点状态 ----
-        self.status_label = QLabel('分段点处：—')
-        self.status_label.setStyleSheet('padding: 4px; background: #f5f5f5;')
-        v.addWidget(self.status_label)
+        # 「分段与拟合」+「中段数据点」左右两列并列
+        two_col = QHBoxLayout()
+        two_col.setSpacing(8)
+        two_col.addWidget(fit_box)
+        two_col.addWidget(ctrl_box, 1)
+        v.addLayout(two_col, 1)
 
         # ---- 输出 ----
         out_box = QGroupBox('输出')
@@ -456,9 +479,13 @@ class SegmentedFitterWidget(QWidget):
         self.ctrl_y = None
         self.data_edit.clear()
         self.ctrl_table.setRowCount(0)
-        self.status_label.setText('分段点处：—')
         self.hint_label.setText('请先加载数据')
         self.hint_label.setStyleSheet('color: #888; padding: 4px;')
+        # 基线同步清空（避免悬留旧拟合基线）
+        self._baseline = None
+        self.baseline_show_chk.setEnabled(False)
+        self.baseline_clear_btn.setEnabled(False)
+        self.baseline_show_chk.setChecked(True)
         self.ax.clear()
         self.ax.grid(True, alpha=0.3)
         self.ax.set_xlabel('归一化展向 (r/R)')
@@ -754,11 +781,59 @@ class SegmentedFitterWidget(QWidget):
         )
         self.hint_label.setStyleSheet('color: #888; padding: 4px;')
 
+    # ============================================================
+    # 基线（仿全段拟合：固定 / 清除 / 显隐）
+    # ============================================================
+    def _on_pin_baseline(self):
+        """把当前分段拟合合并曲线保存为基线。"""
+        if self.last_result is None or self.last_result.full_x is None:
+            self._log('请先生成拟合曲线，再固定基线', 'warning')
+            return
+        self._baseline = {
+            'x': np.array(self.last_result.full_x, copy=True),
+            'y': np.array(self.last_result.full_y, copy=True),
+            'visible': True,
+        }
+        self.baseline_show_chk.setEnabled(True)
+        self.baseline_clear_btn.setEnabled(True)
+        self.baseline_show_chk.setChecked(True)
+        n = len(self._baseline['x'])
+        has_right = self.last_result.has_right
+        seg_info = (f'左 {len(self.last_result.left_x)} + 中 {len(self.last_result.middle_x)}'
+                    + (f' + 右 {len(self.last_result.right_x)}' if has_right else '')
+                    + f' = 共 {n} 点')
+        self._log(f'已固定基线（{seg_info}）。后续编辑可见对比。', 'info')
+        self._refresh_plot()
+
+    def _on_clear_baseline(self):
+        """清除基线。"""
+        if self._baseline is None:
+            return
+        self._baseline = None
+        self.baseline_show_chk.setEnabled(False)
+        self.baseline_clear_btn.setEnabled(False)
+        self._log('已清除基线', 'info')
+        self._refresh_plot()
+
+    def _on_baseline_visibility_changed(self, state):
+        """切换基线显隐。"""
+        if self._baseline is None:
+            return
+        self._baseline['visible'] = bool(state)
+        self._refresh_plot()
+
     def _draw(self, res):
         self.ax.clear()
         self.ax.grid(True, alpha=0.3)
         self.ax.set_xlabel('归一化展向 (r/R)')
         self.ax.set_ylabel('值')
+
+        # 基线（最先画，置于底层；灰色虚线）
+        if (self._baseline is not None and self._baseline.get('visible', True)
+                and self._baseline.get('x') is not None):
+            self.ax.plot(self._baseline['x'], self._baseline['y'], '--',
+                         color='#9aa0a6', linewidth=1.5, alpha=0.75,
+                         label='基线', zorder=4)
 
         # 左复用段（灰实线）
         self.ax.plot(res.left_x, res.left_y, color='#888', lw=2.2,
@@ -806,23 +881,6 @@ class SegmentedFitterWidget(QWidget):
         self.ax.legend(loc='best', fontsize=9)
         self.fig.tight_layout()
         self.canvas.draw_idle()
-
-        # 状态标签（双段格式）
-        if res.has_right:
-            self.status_label.setText(
-                f"R1={res.r1_x:.2f}: y={res.r1_y:.4g}, "
-                f"y'={res.r1_dy:.4g}, y''={res.r1_ddy:.4g}  |  "
-                f"R2={res.r2_x:.2f}: y={res.r2_y:.4g}, "
-                f"y'={res.r2_dy:.4g}, y''={res.r2_ddy:.4g}  "
-                f"（左/右段端部局部样条估计，作为中段 C2 约束）"
-            )
-        else:
-            # 退化情形：只显示 R1 约束 + R2（叶尖）自由
-            self.status_label.setText(
-                f"R1={res.r1_x:.2f}: y={res.r1_y:.4g}, "
-                f"y'={res.r1_dy:.4g}, y''={res.r1_ddy:.4g}  |  "
-                f"R2=1.00（退化，叶尖自由）"
-            )
 
     # ============================================================
     # 导出
