@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QSizePolicy, QComboBox,
 )
 
-from global_config import config_center
+from global_config import config_center, activity_hub
 
 from business.blade_converter.bc_config import (
     DEFAULT_BLADE_DB_FILE, DEFAULT_OUTPUT_FILE, DEFAULT_MAC_FILE,
@@ -224,6 +224,8 @@ class BladeConverterPanel(QWidget):
 
         # 流水线状态（用于 stepper 反馈）
         self._stage_states = {k: 'pending' for k, *_ in self._TAB_STEPS}
+        # 正在运行的 stage 集合（向 nav_list 广播模块整体是否在跑）
+        self._running_stages = set()
 
         self._build_ui()
         self.setMinimumHeight(0)
@@ -738,11 +740,15 @@ class BladeConverterPanel(QWidget):
             self._run_btn_text_cache.setdefault(stage, run_btn.text())
             run_btn.setEnabled(False)
             run_btn.setText('运行中...')
+            self._running_stages.add(stage)
         else:
             run_btn.setEnabled(True)
             cached = getattr(self, '_run_btn_text_cache', {}).get(stage)
             if cached:
                 run_btn.setText(cached)
+            self._running_stages.discard(stage)
+        # 广播模块整体运行状态：任意 stage 在跑 → True
+        activity_hub.running_changed.emit(self.MODULE_ID, bool(self._running_stages))
 
     def _open_dir(self, path):
         try:

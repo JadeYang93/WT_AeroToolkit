@@ -24,7 +24,7 @@ from config import (
     UNSPECIFIED_BLADE_KEY, LINESTYLE_OPTIONS, LINE_WIDTHS, DEFAULT_LINEWIDTH,
     ALPHA_OPTIONS, DEFAULT_ALPHA,
 )
-from global_config import config_center
+from global_config import config_center, activity_hub
 from ui.base_module_panel import BaseWorkerPanel
 
 
@@ -813,6 +813,7 @@ class WindFarmStatsPanel(BaseWorkerPanel):
         self.run_btn.setEnabled(False)
         self.run_btn.setText('运行中...')
         self.open_btn.setEnabled(False)   # 运行中禁用，避免误点
+        activity_hub.running_changed.emit(self.MODULE_ID, True)
         mode_str = '月度湍流表' if is_monthly_ti else '秒级原始数据'
         self._log(f'模式: {mode_str}')
         self._log(f'输入: {self.data_dir}')
@@ -853,6 +854,7 @@ class WindFarmStatsPanel(BaseWorkerPanel):
     def _on_finished(self):
         self.run_btn.setEnabled(True)
         self.run_btn.setText('开始统计')
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         result = self.worker.result
         if result and result.get('error'):
             self._log(f'[错误] {result["error"]}')

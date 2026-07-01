@@ -35,7 +35,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 # FigureCanvasQTAgg 直接用 Figure 实例即可继承字体设置，不受 Agg 影响
 import core.plotting as plotting  # noqa: F401
 
-from global_config import config_center
+from global_config import config_center, activity_hub
 from config import PROJECT_ROOT, SRC_DIR
 
 from business.shape_design import (
@@ -621,6 +621,8 @@ class ShapeDesignPanel(QWidget):
         # 三个 stage 的流水线状态：pending（未到达）/ completed（已成功跑过）
         # 用于 stepper 的视觉反馈，不强制顺序（用户可独立反复运行某个 stage）
         self._stage_states = {'stage1': 'pending', 'te': 'pending', 'stage2': 'pending'}
+        # 正在运行的 stage 集合：用于向 nav_list 广播模块整体是否在跑（>0 即在跑）
+        self._running_stages = set()
 
         self._build_ui()
         self.setMinimumHeight(0)
@@ -1328,11 +1330,15 @@ class ShapeDesignPanel(QWidget):
             self._run_btn_text_cache.setdefault(stage, run_btn.text())
             run_btn.setEnabled(False)
             run_btn.setText('运行中...')
+            self._running_stages.add(stage)
         else:
             run_btn.setEnabled(True)
             cached = getattr(self, '_run_btn_text_cache', {}).get(stage)
             if cached:
                 run_btn.setText(cached)
+            self._running_stages.discard(stage)
+        # 广播模块整体运行状态：任意 stage 在跑 → True
+        activity_hub.running_changed.emit(self.MODULE_ID, bool(self._running_stages))
 
     def _open_dir(self, path):
         try:

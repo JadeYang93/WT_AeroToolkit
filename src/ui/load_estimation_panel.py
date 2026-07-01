@@ -32,7 +32,7 @@ import core.plotting as plotting  # noqa: F401
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from global_config import config_center
+from global_config import config_center, activity_hub
 from business.load_estimation import (
     load_data, fit_loads, save_results, plot_result,
     VIEW_OPTIONS, COMPONENTS,
@@ -323,6 +323,7 @@ class LoadEstimationPanel(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.open_btn.setEnabled(False)
+        activity_hub.running_changed.emit(self.MODULE_ID, True)
 
         self._worker = LoadEstimationWorker(input_path, self.out_dir)
         self._worker.progress.connect(self._on_progress)
@@ -340,6 +341,7 @@ class LoadEstimationPanel(QWidget):
     def _on_finished(self):
         self.run_btn.setEnabled(True)
         self.run_btn.setText('运行拟合')
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         if self._worker.error:
             QMessageBox.critical(self, '拟合失败', self._worker.error)
             return

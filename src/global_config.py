@@ -378,3 +378,20 @@ class ConfigCenter(QObject):
 
 # 全局单例：所有模块 import 它
 config_center = ConfigCenter()
+
+
+class ModuleActivityHub(QObject):
+    """模块运行状态广播中心（全局单例 activity_hub）。
+
+    各模块面板在 _set_running / _on_run / _on_finished 中 emit running_changed，
+    MainWindow 监听以在左侧 nav_list 给运行中的模块加视觉提示
+    （● 前缀 + 半透明气流青背景）。
+
+    参数：(module_id: str, is_running: bool)
+    """
+
+    running_changed = pyqtSignal(str, bool)
+
+
+# 全局单例：所有模块 import 它
+activity_hub = ModuleActivityHub()

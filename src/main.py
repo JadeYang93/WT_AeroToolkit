@@ -17,13 +17,14 @@ if sys.platform == 'win32':
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('aerotoolkit.windfarm.1')
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont, QFontDatabase, QIcon, QPixmap
+from PyQt5.QtGui import QFont, QFontDatabase, QIcon, QPixmap, QColor, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QListWidget, QStackedWidget, QPushButton, QSplashScreen,
 )
 
 from config import APP_VERSION, PROJECT_ROOT
+from global_config import activity_hub
 from ui.wind_farm_panel import WindFarmStatsPanel
 from ui.wind_farm_compare_panel import WindFarmComparePanel
 from ui.shape_design_panel import ShapeDesignPanel
@@ -566,6 +567,64 @@ class MainWindow(QMainWindow):
             self.nav_list.setCurrentRow(0)
 
         self._build_menu()
+
+        # 缓存导航栏原始名字（剥离运行状态前缀用），监听模块运行状态变化
+        self._nav_original_names = [name for name, _ in TOOLS]
+        activity_hub.running_changed.connect(self._on_module_running)
+
+    def _on_module_running(self, module_id, running):
+        """模块运行状态变化 → 在左侧 nav_list 加视觉提示。
+
+        running=True：行文字加 ● 前缀 + 半透明气流青背景
+        running=False：恢复（注意 selected 状态由 QSS 接管，setForeground/Background 只在
+        未选中时显现；运行中的模块在它自己的 tab 上时看到 selected 高亮，切到其他 tab
+        才能看到背景色提示）。
+        """
+        # 找到 module_id 对应的 nav 索引
+        nav_idx = None
+        for i, (_, panel_cls) in enumerate(TOOLS):
+            if getattr(panel_cls, 'MODULE_ID', None) == module_id:
+                nav_idx = i
+                break
+        if nav_idx is None:
+            return
+        item = self.nav_list.item(nav_idx)
+        if item is None:
+            return
+        name = self._nav_original_names[nav_idx]
+        if running:
+            item.setText(f'●  {name}')
+            # 半透明气流青背景（rgba，~31% alpha），与 QSS ::item:selected 选中色区分
+            item.setBackground(QBrush(QColor(14, 165, 233, 80)))
+        else:
+            item.setText(name)
+            # 恢复透明（QSS ::item 默认色 #1e3a5f 由导航容器提供）
+            item.setBackground(QBrush(QColor(0, 0, 0, 0)))
+
+    def showEvent(self, event):
+        """首次显示时绑定 screenChanged —— windowHandle() 在 show 之前为 None，
+        必须在这里才能拿到 QWindow 接收 screenChanged 信号。"""
+        super().showEvent(event)
+        wh = self.windowHandle()
+        if wh is not None and not getattr(self, '_screen_chg_bound', False):
+            wh.screenChanged.connect(self._on_screen_changed)
+            self._screen_chg_bound = True
+
+    def _on_screen_changed(self, new_screen):
+        """跨屏拖动后：把窗口 clamp 到新屏的可用工作区。
+
+        原问题：从 2560×1600 拖到 1920×1080，窗口尺寸不更新，导致底部/侧边溢出屏幕。
+        本槽：min(当前尺寸, 新屏可用区-边距)，并把窗口左上角挪进新屏内。"""
+        if new_screen is None:
+            return
+        avail = new_screen.availableGeometry()
+        margin = 20  # 屏幕边缘留 20px 缝隙，避免贴边看不见
+        new_w = min(self.width(), avail.width() - margin)
+        new_h = min(self.height(), avail.height() - margin)
+        # 当前左上角若已在新屏可用区外，挪到屏内
+        new_x = max(avail.left(), min(self.x(), avail.right() - new_w))
+        new_y = max(avail.top(), min(self.y(), avail.bottom() - new_h))
+        self.setGeometry(new_x, new_y, new_w, new_h)
 
     def _build_menu(self):
         """构建顶部菜单栏。当前只有「帮助」菜单，列出每个模块的帮助 + 关于。"""

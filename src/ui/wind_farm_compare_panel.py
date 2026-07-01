@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 )
 from business.wind_farm.compare import run_compare, read_farm_monthly, METRIC_COLUMN
 from core.io_utils import scan_farm_dirs, EXCEL_FILENAME
-from global_config import config_center
+from global_config import config_center, activity_hub
 
 
 # 预览表表头字体（白字加粗）
@@ -485,6 +485,7 @@ class WindFarmComparePanel(QWidget):
         self.start_btn.setEnabled(False)
         self.start_btn.setText('运行中...')
         self.open_output_btn.setEnabled(False)
+        activity_hub.running_changed.emit(self.MODULE_ID, True)
         self._log(f'输入: {self.input_dir}')
         self._log(f'输出: {self.out_dir}')
         self._log(f'指标: {metrics}')
@@ -507,6 +508,7 @@ class WindFarmComparePanel(QWidget):
     def _on_finished(self):
         self.start_btn.setEnabled(True)
         self.start_btn.setText('开始统计')
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         result = self.worker.result
         if result and result.get('error'):
             self._log(f'[错误] {result["error"]}')
