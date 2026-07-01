@@ -1,0 +1,38 @@
+{
+  "analysis":
+  {
+    "unit_loads":false,
+    "buckling":false,
+    "strain_analysis":true,
+    "blade_number":1,
+    "write_extreme_strain":true,
+    "write_extreme_force":false,
+    "sign_web_shear":1,
+    "buckling2ldc_max_critload":1,
+    "buckling2ldc_max_loads":1,
+    "calculate_cross_properties":true,
+    "analysis_line_location":{"perform":false,
+    "binsize":0.1,
+    "FSF":false,
+    "damage_per_loadcase":false,
+    "target_damage_FSF":1,
+    "calculate_K":false,
+    "write2tim":false,
+    "write_markov":false,
+    "lifetime_factor":1},
+    "s":{s_positions},
+    "locations":[],
+    "panels":[],
+    "loadsteps":[],
+    "loadcases":[
+{
+      "name": "LOAD",
+      "path": "{work_folder}/LOAD.LD1",
+      "loadcase_name": "LOAD",
+      "loadcase_description": "LOAD",
+      "loadset_name": " ",
+      "loadset_description": " "
+}
+  ]
+  }
+}

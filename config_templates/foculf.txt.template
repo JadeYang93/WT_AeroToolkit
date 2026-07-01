@@ -1,0 +1,8 @@
+Loadcase name           LOAD
+Loadcase description                                              None
+blade_span                            {blade_span}
+nr_blades                              3
+blade_root_radius                    0.0
+start_table load_table
+{load_data}
+end_table load_table

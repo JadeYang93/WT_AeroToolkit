@@ -1,0 +1,29 @@
+{
+  "deflection":
+  {
+    "write2vtk":false,
+    "write2tim":true,
+    "writetip2tim":false,
+    "blade_number":1,
+    "number_stations":10,
+    "nr_blades":3,
+    "correct_loadfactor":false,
+    "azimuth_min":0,
+    "azimuth_max":360,
+    "cone":0,
+    "tilt":0,
+    "s":[],
+    "loadcases":[
+{
+      "name": "LOAD",
+      "path": "LOAD.LD1",
+      "loadcase_name": " ",
+      "loadcase_description": "",
+      "loadset_name": " ",
+      "loadset_description": " ",
+      "occurrence":0,
+      "loadfactor":1
+}
+  ]
+  }
+}

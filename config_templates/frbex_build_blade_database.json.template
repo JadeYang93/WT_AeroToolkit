@@ -1,0 +1,11 @@
+{
+  "build_blade_db":
+  {
+    "blade_identifier":"blade",
+    "drmx":{drmx},
+    "vtk_cross_mesh":0,
+    "vtk_lines":0,
+    "s":[]
+
+  }
+}

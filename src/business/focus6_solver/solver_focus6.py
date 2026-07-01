@@ -272,6 +272,10 @@ class Focus6SolverThread(QThread):
             self.log_signal.emit(f"\n1. 准备工作目录...")
             self.log_signal.emit(f"   SUM文件夹: {sum_folder}")
 
+            # 先确保 SUM 根目录存在（后续 mac 复制、work_folder 创建都依赖它）
+            # 首次运行时 sum_folder 可能尚未创建，shutil.copy2 会失败 (WinError 3)
+            sum_folder.mkdir(parents=True, exist_ok=True)
+
             # 应变计算功能需要同时创建两个工作文件夹
             if function_name == FUNCTION_STRAIN:
                 load_convert_folder_name = f"{solver_type}_LoadConversion"
@@ -520,18 +524,31 @@ class Focus6SolverThread(QThread):
                     shutil.copy2(mac_file, mac_file_in_work)
                     self.log_signal.emit(f"   ✓ 复制mac文件到工作文件夹（重命名为blade_geometry.mac）")
 
-            # 对于解析mac文件功能，额外复制读取mac文件功能的BUFFER
+            # 对于解析mac文件功能，硬依赖「读取mac文件」产出的 BUFFER ——
+            # 没有它直接 return False，避免后续 frbex.exe 求解器读到空 BUFFER 才崩。
             if function_name == FUNCTION_PARSE_MAC:
                 read_mac_folder = self._find_function_folder(sum_folder, solver_type, FUNCTION_READ_MAC)
                 source_buffer = read_mac_folder / "BUFFER"
                 target_buffer = self.work_folder / "BUFFER"
 
-                if source_buffer.exists():
-                    # 删除现有BUFFER并复制
-                    if target_buffer.exists():
-                        shutil.rmtree(target_buffer)
-                    shutil.copytree(source_buffer, target_buffer)
-                    self.log_signal.emit(f"   ✓ 复制BUFFER文件夹（从读取mac文件）")
+                if not source_buffer.exists():
+                    self.log_signal.emit(f"\n✗ 错误：找不到'读取mac文件'生成的 BUFFER 文件夹")
+                    self.log_signal.emit(f"   期望路径: {source_buffer}")
+                    self.log_signal.emit(f"   提示：必须先执行「读取mac文件」功能，生成 BUFFER 数据后才能解析")
+                    return False
+
+                buffer_files = [f for f in source_buffer.glob('*') if not f.name.startswith('.')]
+                if not buffer_files:
+                    self.log_signal.emit(f"\n✗ 错误：'读取mac文件'的 BUFFER 文件夹为空")
+                    self.log_signal.emit(f"   路径: {source_buffer}")
+                    self.log_signal.emit(f"   提示：请重新执行「读取mac文件」功能（可能上次未正常完成）")
+                    return False
+
+                # 删除现有BUFFER并复制
+                if target_buffer.exists():
+                    shutil.rmtree(target_buffer)
+                shutil.copytree(source_buffer, target_buffer)
+                self.log_signal.emit(f"   ✓ 复制 BUFFER 文件夹（{len(buffer_files)} 个文件，从「读取mac文件」）")
 
             self.log_signal.emit(f"\n   工作目录准备完成")
             return True
@@ -1973,7 +1990,7 @@ FINISH  /nopause
             # 6. 保存到CSV文件（如果需要）
             if self.generate_csv:
                 import csv
-                csv_file = work_folder / "重量统计.csv"
+                csv_file = sum_folder / "重量统计.csv"
 
                 # 使用UTF-8 with BOM编码，Excel才能正确识别中文
                 with open(csv_file, 'w', newline='', encoding='utf-8-sig') as f:
