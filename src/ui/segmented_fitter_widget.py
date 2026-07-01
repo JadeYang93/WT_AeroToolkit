@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QMessageBox, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QScrollArea, QFrame, QSizePolicy, QPlainTextEdit, QTextEdit,
+    QComboBox,
 )
 
 # matplotlib 嵌入（import plotting 触发中文字体配置）
@@ -216,7 +217,27 @@ class SegmentedFitterWidget(QWidget):
         self.cont_label.setStyleSheet('color: #0ea5e9; font-weight: bold;')
         gf.addWidget(self.cont_label, 2, 1)
 
-        gf.addWidget(QLabel('B 样条阶数 k:'), 3, 0)
+        # 拟合方法（v0.3.x 起多方法支持；B 样条为默认，与历史一致）
+        gf.addWidget(QLabel('拟合方法:'), 3, 0)
+        self.method_combo = QComboBox()
+        self.method_combo.addItem('B 样条 (C2)', 'spline')
+        self.method_combo.addItem('三次样条 (C2)', 'cubic')
+        self.method_combo.addItem('Akima (C1)', 'akima')
+        self.method_combo.addItem('PCHIP (C1)', 'pchip')
+        self.method_combo.addItem('多项式 (best-effort)', 'poly')
+        self.method_combo.setToolTip(
+            'B 样条：阶数 k 可调，双端 C2；\n'
+            '三次样条：通过一阶导数 BC 实现 C2；\n'
+            'Akima：抑制振荡，C1 连续；\n'
+            'PCHIP：保形（单调），C1 连续；\n'
+            '多项式：阶数可调，无严格边界连续性。'
+        )
+        self.method_combo.currentIndexChanged.connect(self._on_method_changed)
+        gf.addWidget(self.method_combo, 3, 1)
+
+        # B 样条阶数 k（仅 spline 方法显示）
+        self.k_label = QLabel('B 样条阶数 k:')
+        gf.addWidget(self.k_label, 4, 0)
         self.k_spin = QSpinBox()
         self.k_spin.setRange(5, 7)
         self.k_spin.setValue(5)
@@ -225,20 +246,32 @@ class SegmentedFitterWidget(QWidget):
             '增大 k 拟合更平滑但需更多控制点。'
         )
         self.k_spin.valueChanged.connect(self._on_param_changed)
-        gf.addWidget(self.k_spin, 3, 1)
+        gf.addWidget(self.k_spin, 4, 1)
 
-        gf.addWidget(QLabel('中段控制点数:'), 4, 0)
+        # 多项式阶数（仅 poly 方法显示）
+        self.poly_deg_label = QLabel('多项式阶数:')
+        self.poly_deg_label.setVisible(False)
+        gf.addWidget(self.poly_deg_label, 4, 0)
+        self.poly_deg_spin = QSpinBox()
+        self.poly_deg_spin.setRange(2, 9)
+        self.poly_deg_spin.setValue(3)
+        self.poly_deg_spin.setVisible(False)
+        self.poly_deg_spin.setToolTip('多项式阶数。阶数越高越灵活但易振荡。推荐 3-6')
+        self.poly_deg_spin.valueChanged.connect(self._on_param_changed)
+        gf.addWidget(self.poly_deg_spin, 4, 1)
+
+        gf.addWidget(QLabel('中段数据点数:'), 5, 0)
         self.nctrl_spin = QSpinBox()
         self.nctrl_spin.setRange(5, 15)
         self.nctrl_spin.setValue(5)
-        self.nctrl_spin.setToolTip('中段控制点数量（不含 R1/R2 端点）。变化时 Y 会从旧点线性重采样到新点数')
+        self.nctrl_spin.setToolTip('中段数据点数量（不含 R1/R2 端点）。变化时 Y 会从旧点线性重采样到新点数')
         self.nctrl_spin.valueChanged.connect(self._on_nctrl_changed)
-        gf.addWidget(self.nctrl_spin, 4, 1)
+        gf.addWidget(self.nctrl_spin, 5, 1)
 
         v.addWidget(fit_box)
 
-        # ---- 控制点表 ----
-        ctrl_box = QGroupBox('中段控制点（拖动画布红点 / 编辑表格）')
+        # ---- 数据点表 ----
+        ctrl_box = QGroupBox('中段数据点（拖动画布红点 / 编辑表格）')
         ctrl_box.setObjectName('gb_data')
         cv = QVBoxLayout(ctrl_box)
         cv.setContentsMargins(10, 8, 10, 8)
@@ -257,10 +290,18 @@ class SegmentedFitterWidget(QWidget):
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
         cv.addWidget(self.ctrl_table)
 
-        tip_lbl = QLabel('提示：画布上拖动红点可同时调整 X、Y（X 自动避开邻居和 R1/R2 边界）。也可双击表格精确编辑。')
-        tip_lbl.setWordWrap(True)
-        tip_lbl.setStyleSheet('color: #888; font-size: 11px;')
-        cv.addWidget(tip_lbl)
+        from ui.help_button import add_help_to_groupbox
+        add_help_to_groupbox(
+            ctrl_box,
+            title='中段数据点说明',
+            text=(
+                '<b>中段数据点</b>：曲线必经过这些点（插值语义）。<br><br>'
+                '• <b>画布拖动</b>：直接拖红点，X/Y 同时调整；<br>'
+                '• <b>X 自动避开</b>：不能越过邻居点，不能出 [R1, R2]；<br>'
+                '• <b>双击表格</b>：精确编辑 X / Y 数值；<br>'
+                '• 切换方法（B 样条 / 三次样条 / Akima / PCHIP / 多项式）会改变曲线通过这些点的方式。'
+            ),
+        )
 
         v.addWidget(ctrl_box, 1)
 
@@ -289,9 +330,16 @@ class SegmentedFitterWidget(QWidget):
         lv.setSpacing(4)
         log_head = QHBoxLayout()
         log_head.setSpacing(6)
-        log_tip = QLabel('解析 / 导出的运行情况都写在这里（不再弹窗）')
-        log_tip.setStyleSheet('color: #666; font-size: 11px;')
-        log_head.addWidget(log_tip)
+        from ui.help_button import add_help_to_groupbox
+        add_help_to_groupbox(
+            log_box,
+            title='运行日志说明',
+            text=(
+                '<b>运行日志</b>：解析 / 导出的运行情况都写在这里（v0.3.12 起不再弹窗）。<br><br>'
+                '• 颜色含义：<b>绿</b> = 成功 · <b>橙</b> = 警告 · <b>红</b> = 错误；<br>'
+                '• 点「🗑 清空」可清除日志内容。'
+            ),
+        )
         log_head.addStretch()
         log_clear = QPushButton('🗑 清空')
         log_clear.clicked.connect(lambda: self.log_view.clear())
@@ -498,7 +546,27 @@ class SegmentedFitterWidget(QWidget):
         self._populate_table()
 
     def _on_param_changed(self):
-        """阶数 k 变化：直接重画（控制点不变）。"""
+        """阶数 k / 多项式阶数 变化：直接重画（数据点不变）。"""
+        self._fit_timer.start()
+
+    def _on_method_changed(self):
+        """拟合方法切换：动态显示/隐藏 k_spin / poly_deg_spin，更新连续性标签。"""
+        method_key = self.method_combo.currentData()
+        is_spline = (method_key == 'spline')
+        is_poly = (method_key == 'poly')
+        self.k_label.setVisible(is_spline)
+        self.k_spin.setVisible(is_spline)
+        self.poly_deg_label.setVisible(is_poly)
+        self.poly_deg_spin.setVisible(is_poly)
+        # 连续性标签
+        cont_text = {
+            'spline': 'C2 (双端二阶导连续)',
+            'cubic':  'C2 (三次样条 + 一阶导 BC)',
+            'akima':  'C1 (Akima 抑制振荡)',
+            'pchip':  'C1 (PCHIP 保形单调)',
+            'poly':   'best-effort (无边界连续性)',
+        }.get(method_key, 'C2')
+        self.cont_label.setText(cont_text)
         self._fit_timer.start()
 
     def _on_nctrl_changed(self):
@@ -661,11 +729,17 @@ class SegmentedFitterWidget(QWidget):
             right_y = None
 
         try:
+            method_key = self.method_combo.currentData() or 'spline'
+            poly_deg = self.poly_deg_spin.value()
+            # continuity 仅 spline 方法用；其他方法自带连续性
+            cont = 'C2' if method_key == 'spline' else 'C2'
             self.last_result = fit_middle_segment(
                 left_x, left_y,
                 right_x, right_y,
                 self.ctrl_x, self.ctrl_y,
-                continuity='C2', k=k,
+                method=method_key,
+                continuity=cont, k=k,
+                poly_deg=poly_deg,
             )
         except ValueError as e:
             self.hint_label.setText(f'拟合失败：{e}')
@@ -694,15 +768,24 @@ class SegmentedFitterWidget(QWidget):
             self.ax.plot(res.right_x, res.right_y, color='#888', lw=2.2,
                          label='右复用段（锁定）', zorder=3)
 
-        # 中段拟合（蓝实线）
+        # 中段拟合（蓝实线）— 标签动态显示实际方法 + 连续性
+        method_label = getattr(res, 'method', 'spline')
+        cont_label_map = {
+            'spline': f'B 样条 ({res.continuity})',
+            'cubic':  '三次样条 (C2)',
+            'akima':  'Akima (C1)',
+            'pchip':  'PCHIP (C1)',
+            'poly':   f'多项式 (best-effort)',
+        }
+        middle_label_suffix = cont_label_map.get(method_label, res.continuity)
         self.ax.plot(res.middle_x, res.middle_y, color='#1e3a5f', lw=2.0,
-                     label='中段拟合 (双端 C2)', zorder=4)
+                     label=f'中段拟合 ({middle_label_suffix})', zorder=4)
 
-        # 中段控制点（红圆，X/Y 都可拖）—— 仅 ctrl_x/y，不含 R1/R2 端点
+        # 中段数据点（红圆，X/Y 都可拖）—— 仅 ctrl_x/y，不含 R1/R2 端点
         self.ax.scatter(self.ctrl_x, self.ctrl_y,
                         color='#e86452', s=80, zorder=6,
                         edgecolors='black', linewidths=1.0,
-                        label='中段控制点（X/Y 都可拖）')
+                        label='中段数据点（X/Y 都可拖）')
 
         # 两个分段点（黑色 X 标记）
         self.ax.scatter([res.r1_x], [res.r1_y],

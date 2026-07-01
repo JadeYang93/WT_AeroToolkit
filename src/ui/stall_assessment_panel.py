@@ -7,8 +7,8 @@ UI 结构（方案 A 左右双栏 + 底部执行栏）：
   - 模块 banner（由基类提供）
   - 左栏（2×2 网格）：
       · 标准翼型表（QTableWidget，三列：相对厚度 / 标失速攻角 / VG 失速攻角，可增删行）
-      · VG 安装范围表（QTableWidget，三列：标准厚度下拉 / VG 起 z / VG 止 z，可增删行）
-      · 展向分布输入（粘贴文本框 + 载入 CSV/xlsx 按钮）
+      · VG 安装范围表（QTableWidget，两列：VG 起 z / VG 止 z，可增删行；空表 = 不启用）
+      · 相对厚度分布输入（粘贴文本框 + 载入 CSV/xlsx 按钮）
       · 攻角分布输入（粘贴文本框 + 载入 CSV/xlsx 按钮）
   - 右栏：
       · 展向分布图（r/R ↔ 失速攻角，含 VG 安装段阴影 + 段边界竖虚线）
@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPlainTextEdit, QTextEdit, QSplitter, QSizePolicy,
+    QCheckBox,
 )
 
 # matplotlib 嵌入式画布（导入 plotting 触发 Agg 后端 + 中文字体配置，
@@ -34,6 +35,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from ui.base_module_panel import BaseWorkerPanel
+from ui.help_button import add_help_to_groupbox
+from global_config import activity_hub
 from business.stall_assessment import (
     parse_span_text, parse_span_file, normalize_positions,
     interpolate, save_csv, plot_span,
@@ -249,7 +252,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
         # 防止用户拖到过窄：保留交互可调性，但下限为 200px
         outer_split.setChildrenCollapsible(False)
 
-        # profile_table 已填充（vg_table 此时已创建）
+        # profile_table 已填充（VG 输入控件此时已创建）
 
         # 挂预览信号（所有输入改动 → 防抖重算 + 重绘）
         self._connect_preview_signals()
@@ -290,17 +293,17 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.addLayout(row)
         return box
 
-    # ---------- 展向分布输入 ----------
+    # ---------- 相对厚度分布输入 ----------
     def _build_span_group(self):
-        box = QGroupBox('展向分布')
+        box = QGroupBox('相对厚度分布')
         box.setObjectName('gb_data')
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        hint = QLabel('每行「展向位置, 相对厚度」，首行可带标题；或从文件载入：')
-        hint.setStyleSheet('color: #888;')
-        lay.addWidget(hint)
+        add_help_to_groupbox(
+            box, title='相对厚度分布',
+            text='每行「展向位置, 相对厚度」，首行可带标题；或从文件载入：')
 
         self.span_edit = QPlainTextEdit()
         self.span_edit.setPlainText(DEFAULT_SPAN)
@@ -325,9 +328,9 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        hint = QLabel('每行「展向位置, 最大攻角°」，首行可带标题；或从文件载入：')
-        hint.setStyleSheet('color: #888;')
-        lay.addWidget(hint)
+        add_help_to_groupbox(
+            box, title='攻角分布',
+            text='每行「展向位置, 最大攻角°」，首行可带标题；或从文件载入：')
 
         self.aoa_edit = QPlainTextEdit()
         self.aoa_edit.setPlainText(DEFAULT_AOA)
@@ -344,18 +347,18 @@ class StallAssessmentPanel(BaseWorkerPanel):
         lay.addLayout(row)
         return box
 
-    # ---------- VG 安装范围表（新增） ----------
+    # ---------- VG 安装范围表（每行一段：VG 起 z / VG 止 z）----------
     def _build_vg_group(self):
-        box = QGroupBox('VG 安装范围表（可选）')
+        box = QGroupBox('VG 安装范围')
         box.setObjectName('gb_data')
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 6, 8, 6)
         lay.setSpacing(4)
 
-        hint = QLabel('每行一组 VG 安装段：VG 起/止 z (r/R)。'
-                      '空表 = 不使用 VG（走 PCHIP）。')
-        hint.setStyleSheet('color: #888;')
-        lay.addWidget(hint)
+        add_help_to_groupbox(
+            box, title='VG 安装范围',
+            text='每行一段 VG：「VG 起 z / VG 止 z」（r/R，0~1）。\n'
+                 '空表 = 不启用 VG；段内查询点按 VG 失速攻角，段外按标失速攻角。')
 
         self.vg_table = QTableWidget()
         self.vg_table.setColumnCount(2)
@@ -363,6 +366,8 @@ class StallAssessmentPanel(BaseWorkerPanel):
             ['VG 起 z (r/R)', 'VG 止 z (r/R)'])
         self.vg_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.vg_table.verticalHeader().setVisible(False)
+        # 默认 1 行示范值（用户可改可删）
+        self._populate_vg_table([(0.20, 0.55)])
         lay.addWidget(self.vg_table)
 
         row = QHBoxLayout()
@@ -375,6 +380,38 @@ class StallAssessmentPanel(BaseWorkerPanel):
         row.addStretch()
         lay.addLayout(row)
         return box
+
+    def _populate_vg_table(self, segs):
+        """用 [(zs, ze), ...] 列表填 VG 表。"""
+        t = self.vg_table
+        t.blockSignals(True)
+        t.setRowCount(len(segs))
+        for r, (zs, ze) in enumerate(segs):
+            t.setItem(r, 0, QTableWidgetItem(f'{zs:g}'))
+            t.setItem(r, 1, QTableWidgetItem(f'{ze:g}'))
+        t.blockSignals(False)
+
+    def _on_vg_add(self):
+        t = self.vg_table
+        t.blockSignals(True)
+        r = t.rowCount()
+        t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem('0.20'))
+        t.setItem(r, 1, QTableWidgetItem('0.55'))
+        t.blockSignals(False)
+
+    def _on_vg_del(self):
+        t = self.vg_table
+        t.blockSignals(True)
+        rows = sorted({idx.row() for idx in t.selectedIndexes()}, reverse=True)
+        if not rows:
+            r = t.rowCount() - 1
+            if r >= 0:
+                t.removeRow(r)
+        else:
+            for r in rows:
+                t.removeRow(r)
+        t.blockSignals(False)
 
     # ---------- 画图区 ----------
     def _build_plot_group(self):
@@ -433,42 +470,51 @@ class StallAssessmentPanel(BaseWorkerPanel):
     ]
 
     def _show_sop_dialog(self):
-        """弹出失速评估 SOP 对话框。"""
+        """弹出失速评估 SOP 对话框（富文本 + 自动换行 + 滚动条）。"""
         from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QDialogButtonBox,
-                                     QTableWidget, QTableWidgetItem, QAbstractItemView)
+                                     QTextBrowser)
         dlg = QDialog(self)
         dlg.setWindowTitle('失速评估 SOP')
-        dlg.setMinimumSize(720, 420)
+        # 收窄默认宽度（560px），允许更小到 480px（适配小屏）
+        dlg.setMinimumSize(480, 420)
+        dlg.resize(580, 480)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(14, 12, 14, 10)
         v.setSpacing(8)
 
-        head = QLabel(
-            '<b>失速评估标准操作流程</b><br>'
-            '<span style="color:#666;">前 5 步在 Bladed 中完成，'
-            '用于拿到"最大攻角沿展向分布"；第 6 步回到本模块完成插值与对比。</span>')
-        head.setWordWrap(True)
-        v.addWidget(head)
+        # 用 QTextBrowser 渲染富文本：自动按对话框宽度换行，内容过长自动滚动
+        # 第 6 步（本模块）整段加粗 + 蓝色高亮
+        rows_html = []
+        for num, op, desc in self.SOP_STEPS:
+            is_step6 = (num == '6')
+            if is_step6:
+                row = (f'<p style="margin:6px 0;color:#1e3a5f;">'
+                       f'<b>{num}. {op}</b><br>'
+                       f'<span style="font-weight:normal;color:#1e3a5f;">{desc}</span>'
+                       f'</p>')
+            else:
+                row = (f'<p style="margin:6px 0;">'
+                       f'<b>{num}. {op}</b><br>'
+                       f'<span style="color:#444;">{desc}</span>'
+                       f'</p>')
+            rows_html.append(row)
 
-        tbl = QTableWidget(len(self.SOP_STEPS), 3)
-        tbl.setHorizontalHeaderLabels(['#', '操作', '说明'])
-        tbl.verticalHeader().setVisible(False)
-        tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        for i, (num, op, desc) in enumerate(self.SOP_STEPS):
-            tbl.setItem(i, 0, QTableWidgetItem(num))
-            tbl.setItem(i, 1, QTableWidgetItem(op))
-            tbl.setItem(i, 2, QTableWidgetItem(desc))
-            # 第 6 步（本模块）标蓝
-            if num == '6':
-                for c in range(3):
-                    f = tbl.item(i, c).font()
-                    f.setBold(True)
-                    tbl.item(i, c).setFont(f)
-        v.addWidget(tbl, 1)
+        html = (
+            '<div style="font-family: Microsoft YaHei, sans-serif; font-size: 13px;">'
+            '<p style="color:#666; margin:0 0 10px 0;">'
+            '前 5 步在 Bladed 中完成，拿到"最大攻角沿展向分布"；'
+            '第 6 步在本模块完成插值与对比。'
+            '</p>'
+            + '\n'.join(rows_html)
+            + '</div>'
+        )
+        tb = QTextBrowser()
+        tb.setHtml(html)
+        tb.setOpenExternalLinks(True)
+        # 透明背景、去边框，看起来像普通文档
+        tb.setStyleSheet(
+            'QTextBrowser { background: transparent; border: none; }')
+        v.addWidget(tb, 1)
 
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.rejected.connect(dlg.reject)
@@ -577,51 +623,36 @@ class StallAssessmentPanel(BaseWorkerPanel):
             pts.append((a, b, vg))
         return pts
 
-    # ---------- VG 表 ----------
-    def _on_vg_add(self):
-        t = self.vg_table
-        r = t.rowCount()
-        t.insertRow(r)
-        # 默认 z 范围 0~1
-        t.setItem(r, 0, QTableWidgetItem('0.0'))
-        t.setItem(r, 1, QTableWidgetItem('1.0'))
-
-    def _on_vg_del(self):
-        t = self.vg_table
-        rows = sorted({idx.row() for idx in t.selectedIndexes()}, reverse=True)
-        if not rows:
-            r = t.rowCount() - 1
-            if r >= 0:
-                t.removeRow(r)
-        else:
-            for r in rows:
-                t.removeRow(r)
-
+    # ---------- VG 输入读取 ----------
     def _read_vg_segments(self):
-        """从 VG 安装表读 [(thickness, z_start, z_end), ...]。
+        """读 VG 表 → list[(thickness, zs, ze)]。
 
-        thickness 字段占位填 0（当前算法按 z 判定，不使用 thickness）。
-        返回 list（可能为空，表示无 VG，触发 PCHIP 兼容路径）。
+        - 跳过空单元格 / 非法行
+        - 自动纠正 zs > ze
+        - 去重（同 (zs, ze) 只保留一条）
+        - 空表或无有效行 → 空 list（算法走 PCHIP 兼容路径）
+
+        thickness 占位填 0.0（当前算法按 z 判定，不使用 thickness）。
         """
         t = self.vg_table
         segs = []
+        seen = set()
         for r in range(t.rowCount()):
-            item0 = t.item(r, 0)
-            item1 = t.item(r, 1)
-            if item0 is None or item1 is None:
-                continue
-            zs_txt = item0.text().strip()
-            ze_txt = item1.text().strip()
-            if not zs_txt or not ze_txt:
+            items = [t.item(r, c) for c in range(2)]
+            if items[0] is None or items[1] is None:
                 continue
             try:
-                zs = float(zs_txt)
-                ze = float(ze_txt)
+                zs = float(items[0].text())
+                ze = float(items[1].text())
             except ValueError:
                 continue
             if ze < zs:
                 zs, ze = ze, zs
-            segs.append((0.0, zs, ze))  # thickness 占位，算法不用
+            key = (round(zs, 6), round(ze, 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            segs.append((0.0, zs, ze))
         return segs
 
     def _on_load_file(self, target_edit=None):
@@ -757,14 +788,35 @@ class StallAssessmentPanel(BaseWorkerPanel):
             aoa_text = data.get('aoa_text')
             if isinstance(aoa_text, str) and aoa_text:
                 self.aoa_edit.setPlainText(aoa_text)
-            # VG 安装段
+            # VG 安装段（兼容历史格式：vg_segments = [[zs, ze], ...]
+            # 或 [thickness, zs, ze]；或 vg_enabled/vg_start/vg_end 三键）
             vg_segs = data.get('vg_segments')
             if isinstance(vg_segs, list) and vg_segs:
-                t = self.vg_table
-                t.setRowCount(len(vg_segs))
-                for r, seg in enumerate(vg_segs):
-                    t.setItem(r, 0, QTableWidgetItem(f'{seg[0]:g}'))
-                    t.setItem(r, 1, QTableWidgetItem(f'{seg[1]:g}'))
+                parsed = []
+                for seg in vg_segs:
+                    if not isinstance(seg, (list, tuple)) or len(seg) < 2:
+                        continue
+                    try:
+                        # 取末两位为 zs/ze（兼容 [t, zs, ze] 与 [zs, ze]）
+                        zs, ze = float(seg[-2]), float(seg[-1])
+                    except (TypeError, ValueError):
+                        continue
+                    if ze < zs:
+                        zs, ze = ze, zs
+                    parsed.append((zs, ze))
+                if parsed:
+                    self._populate_vg_table(parsed)
+            elif (data.get('vg_enabled') is True
+                  and data.get('vg_start') is not None
+                  and data.get('vg_end') is not None):
+                # 兼容旧版 vg_enabled/vg_start/vg_end 三键
+                try:
+                    zs, ze = float(data['vg_start']), float(data['vg_end'])
+                    if ze < zs:
+                        zs, ze = ze, zs
+                    self._populate_vg_table([(zs, ze)])
+                except (TypeError, ValueError):
+                    pass
         except Exception:
             pass  # 恢复失败不影响启动，用默认值
 
@@ -791,22 +843,30 @@ class StallAssessmentPanel(BaseWorkerPanel):
                         except ValueError:
                             pass
                 profile.append([t, a, vg])
-            # VG 段 → [[zs, ze], ...]
-            vg_segs = []
-            for r in range(self.vg_table.rowCount()):
-                i0, i1 = self.vg_table.item(r, 0), self.vg_table.item(r, 1)
-                if i0 is None or i1 is None:
+            # VG 段：读 VG 表 → [[zs, ze], ...]（空表 → 空 list = 不启用）
+            vg_segs_out = []
+            seen = set()
+            t = self.vg_table
+            for r in range(t.rowCount()):
+                items = [t.item(r, c) for c in range(2)]
+                if items[0] is None or items[1] is None:
                     continue
                 try:
-                    zs, ze = float(i0.text()), float(i1.text())
+                    zs, ze = float(items[0].text()), float(items[1].text())
                 except ValueError:
                     continue
-                vg_segs.append([zs, ze])
+                if ze < zs:
+                    zs, ze = ze, zs
+                key = (round(zs, 6), round(ze, 6))
+                if key in seen:
+                    continue
+                seen.add(key)
+                vg_segs_out.append([zs, ze])
             save_inputs({
                 'profile': profile,
                 'span_text': self.span_edit.toPlainText(),
                 'aoa_text': self.aoa_edit.toPlainText(),
-                'vg_segments': vg_segs,
+                'vg_segments': vg_segs_out,
             })
         except Exception:
             pass  # 保存失败静默，不影响使用
@@ -870,6 +930,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
         self.progress.setValue(0)
         self.run_btn.setEnabled(False)
         self.run_btn.setText('计算中...')
+        activity_hub.running_changed.emit(self.MODULE_ID, True)
         self.open_btn.setEnabled(False)
         # 启动计算前先持久化输入（校验已通过，输入是有意义的）
         self._persist_inputs()
@@ -891,6 +952,7 @@ class StallAssessmentPanel(BaseWorkerPanel):
                       positions, thickness, aoa_positions, aoa):
         self.run_btn.setEnabled(True)
         self.run_btn.setText(self.RUN_BUTTON_TEXT)
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         if self._worker.error:
             return  # 错误信息已由 progress 写入日志
         span_alpha = self._worker.span_alpha

@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFrame, QSizePolicy, QComboBox,
 )
 
-from global_config import config_center
+from global_config import config_center, activity_hub
 from business.focus6_solver.solver_config import (
     DEFAULT_MAC_FILE, DEFAULT_MODULES_PATH,
     SOLVER_FAROB, SOLVER_FRBEX,
@@ -190,9 +190,17 @@ class Focus6SolverPanel(QWidget):
         self.solver_labels['modules_path'] = lbl_modules
         solver_layout.addWidget(QLabel('Modules 目录:'), 0, 0)
         solver_layout.addWidget(lbl_modules, 0, 1)
-        hint_lbl = QLabel('内含 farob/ frbex/ utils/ 等子目录；具体用哪个求解器由下方「求解器类型」决定。')
-        hint_lbl.setStyleSheet('color: #999; font-size: 11px;')
-        solver_layout.addWidget(hint_lbl, 1, 0, 1, 2)
+        from ui.help_button import add_help_to_groupbox
+        add_help_to_groupbox(
+            solver_box,
+            title='FOCUS6 Modules 目录说明',
+            text=(
+                '<b>Modules 目录</b>：FOCUS6 安装目录下的 Modules 文件夹。<br><br>'
+                '• 内含 <code>farob/</code> · <code>frbex/</code> · <code>utils/</code> 等子目录；<br>'
+                '• 具体用哪个求解器由下方「求解器类型」下拉决定；<br>'
+                '• 在「⚙ 设置」里配置后自动保存。'
+            ),
+        )
         solver_layout.setColumnStretch(1, 1)
         v.addWidget(solver_box)
 
@@ -465,6 +473,8 @@ class Focus6SolverPanel(QWidget):
             cached = getattr(self, '_run_btn_text_cache', {}).get(stage)
             if cached:
                 run_btn.setText(cached)
+        # 广播到 nav_list 视觉提示（单 stage 面板：直接 emit running 状态）
+        activity_hub.running_changed.emit(self.MODULE_ID, running)
 
     def _open_dir(self, path):
         try:
@@ -540,11 +550,14 @@ class Focus6SolverPanel(QWidget):
                 zspan_file_resolved = derived
                 zspan_source = 'auto-from-mac'
 
-        # 载荷转化走 utils，其余按 solver_type 选子目录
+        # 载荷转化走 utils；
+        # 其余功能（farob/frbex 求解器）都走 modules/farob 子目录——
+        # 因为 frbex.exe 与 farob.exe 实际上都装在 farob 文件夹里
+        # （与 solver_one_click.py:59 的处理保持一致）
         if function == FUNCTION_LOAD_CONVERSION:
             solver_path_for_params = str(Path(modules_path) / 'utils')
         else:
-            solver_path_for_params = str(Path(modules_path) / solver_type)
+            solver_path_for_params = str(Path(modules_path) / 'farob')
 
         params = {
             'solver_type': solver_type,

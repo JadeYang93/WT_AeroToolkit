@@ -21,6 +21,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.base_module_panel import BaseModulePanel
+from ui.help_button import add_help_to_groupbox
+from global_config import activity_hub
 from business.catia_modeling import (
     SectionParams, ResampleParams, LoftParams,
     load_params, save_params, CatiaModelError,
@@ -143,10 +145,11 @@ class CatiaModelingPanel(BaseModulePanel):
         browse.setFixedWidth(36)
         browse.clicked.connect(self._on_browse_stp)
         gl.addWidget(browse, 0, 2)
-        tip = QLabel('提示: 请先在 CATIA 中手动导入此 STP，'
-                     '点云需带 Sect{组}_{点} 命名')
-        tip.setStyleSheet('color: #6b7280; font-size: 11px;')
-        gl.addWidget(tip, 1, 0, 1, 3)
+        add_help_to_groupbox(
+            box,
+            title='输入文件说明',
+            text='提示: 请先在 CATIA 中手动导入此 STP，<br>'
+                 '点云需带 <code>Sect{组}_{点}</code> 命名')
         return box
 
     def _on_browse_stp(self):
@@ -629,6 +632,7 @@ class CatiaModelingPanel(BaseModulePanel):
             lambda err, k=step, rb=run_btn: self._on_step_finished_err(err, k, rb))
         run_btn.setEnabled(False)
         worker.start()
+        activity_hub.running_changed.emit(self.MODULE_ID, True)
 
     def _on_step_progress(self, pct, msg, progress, log_area):
         """单步骤进度槽：更新该步骤进度条 + 追加日志。"""
@@ -646,6 +650,7 @@ class CatiaModelingPanel(BaseModulePanel):
 
     def _on_step_finished_ok(self, summary, step, run_btn):
         run_btn.setEnabled(True)
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         _run_btn, progress, log_area = self._step_meta[step]
         log_area.append(f'✓ {summary}')
         log_area.verticalScrollBar().setValue(
@@ -654,6 +659,7 @@ class CatiaModelingPanel(BaseModulePanel):
 
     def _on_step_finished_err(self, err, step, run_btn):
         run_btn.setEnabled(True)
+        activity_hub.running_changed.emit(self.MODULE_ID, False)
         _run_btn, progress, log_area = self._step_meta[step]
         log_area.append(f'✗ {err}')
         log_area.verticalScrollBar().setValue(

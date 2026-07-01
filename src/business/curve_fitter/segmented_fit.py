@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.interpolate import BSpline, CubicSpline, make_interp_spline
+from scipy.interpolate import (
+    BSpline, CubicSpline, make_interp_spline,
+    Akima1DInterpolator, PchipInterpolator,
+)
+from typing import Any, Callable
 
 
 __all__ = [
@@ -329,12 +333,14 @@ class SegmentedMiddleFitResult:
         ``r2_dy/ddy`` 来自中段样条自身右端（无约束）。
     has_right : bool
         True = 双端 C2（有右复用段）；False = 退化情形（R2=1.0，单端 C2）。
-    continuity : 'C1' | 'C2'
+    continuity : 'C1' | 'C2' | 'best-effort'
         实际使用的连续性约束（两端同时适用）。
     k : int
         B 样条阶数（双端 C2 要求 k≥5）。
-    spline : BSpline
-        中段样条对象，可继续求值 / 求导。
+    spline : Any
+        中段样条/插值器对象（BSpline / PPoly / poly1d），可继续求值 / 求导。
+    method : str
+        使用的拟合方法：'spline' | 'cubic' | 'akima' | 'pchip' | 'poly'。
     """
 
     left_x: np.ndarray
@@ -356,7 +362,8 @@ class SegmentedMiddleFitResult:
     has_right: bool
     continuity: Continuity
     k: int
-    spline: BSpline
+    spline: Any
+    method: str = 'spline'
 
 
 def fit_middle_segment(
@@ -366,12 +373,14 @@ def fit_middle_segment(
     right_y: np.ndarray | None,
     ctrl_x: np.ndarray,
     ctrl_y: np.ndarray,
+    method: str = 'spline',
     continuity: Continuity = "C2",
     k: int = 5,
+    poly_deg: int = 3,
     tail_points: int = 8,
     middle_resolution: int | None = None,
 ) -> SegmentedMiddleFitResult:
-    """双端 C2 的中段 B 样条拟合。
+    """双端 C2 的中段拟合（多方法）。
 
     三段结构：``[0, R1]`` 左复用 + ``[R1, R2]`` 中段重设 + ``[R2, 1]`` 右复用。
 
@@ -383,13 +392,18 @@ def fit_middle_segment(
         右复用段原数据（必须单调递增、长度 ≥ 4）。首点 = R2。
         传 None 或空数组 → 退化情形（R2 = 1.0，单端 C2，无右段）。
     ctrl_x, ctrl_y : ndarray
-        中段控制点。``ctrl_x`` 必须严格递增，且所有元素在 ``(R1, R2)`` 开区间内
+        中段数据点。``ctrl_x`` 必须严格递增，且所有元素在 ``(R1, R2)`` 开区间内
         （不含端点，端点由左右复用段自动锁定）。
+    method : str
+        拟合方法：'spline' (B 样条, C2) | 'cubic' (三次样条, C2)
+        | 'akima' (Akima, C1) | 'pchip' (PCHIP, C1) | 'poly' (多项式, best-effort)。
     continuity : 'C1' | 'C2'
-        两端同时适用的连续性约束。C2 要求 ``k ≥ 5``（双端共 4 个约束 = k-1）；
-        C1 要求 ``k ≥ 3``（双端共 2 个约束 = k-1）。
+        仅 'spline' 方法使用：两端连续性约束。C2 要求 ``k ≥ 5``；C1 要求 ``k ≥ 3``。
+        其他方法自带连续性（cubic=C2, akima/pchip=C1, poly=best-effort），传入的 continuity 被忽略。
     k : int
-        B 样条阶数。双端 C2 默认 5；双端 C1 可降到 3。
+        B 样条阶数（仅 'spline' 方法用）。双端 C2 默认 5；双端 C1 可降到 3。
+    poly_deg : int
+        多项式阶数（仅 'poly' 方法用）。默认 3，推荐 3-6。
     tail_points : int
         求分段点处导数时，取左/右段端部多少点参与局部样条拟合。默认 8。
     middle_resolution : int | None
@@ -478,36 +492,9 @@ def fit_middle_segment(
         r2_dy = 0.0
         r2_ddy = 0.0
 
-    # ---- 2. 构造 make_interp_spline 的边界约束 ----
-    #    scipy 要求 len(left) + len(right) == k - 1（不是 ≤）
-    #      - C2 双端：左 2 + 右 2 = 4 → k = 5 ✓
-    #      - C2 退化（无右段）：左 2 + 右 (k-3) 个零导数 = k-1
-    #        右端的零导数约束（二阶/三阶/...）= "自然边界"近似
-    #      - C1 双端：左 1 + 右 1 = 2 → k = 3 ✓
-    #      - C1 退化：左 1 + 右 (k-2) 个零导数 = k-1
-    if continuity == "C2":
-        left_bc = [(1, r1_dy), (2, r1_ddy)]
-        if has_right:
-            right_bc = [(1, r2_dy), (2, r2_ddy)]
-        else:
-            # 退化：右端补 (k-3) 个零导数（k=5 时 [(2,0),(3,0)]）
-            # range(2, k-1) = [2, 3, ..., k-2]，共 k-3 个
-            right_bc = [(i, 0.0) for i in range(2, k - 1)]
-            if not right_bc:
-                right_bc = None  # k=3 时 range(2,2) 为空，让 scipy 用 not-a-knot
-    else:  # C1
-        left_bc = [(1, r1_dy)]
-        if has_right:
-            right_bc = [(1, r2_dy)]
-        else:
-            # 退化：右端补 (k-2) 个零导数
-            right_bc = [(i, 0.0) for i in range(2, k)]
-            if not right_bc:
-                right_bc = None
-    bc_type = (left_bc, right_bc)
-
-    # ---- 3. 中段 B 样条拟合 ----
-    # 完整控制点 = [R1] + ctrl + ([R2] 若 has_right)
+    # ---- 2. 构造数据点（含 R1/R2 端点）----
+    #   历史命名「ctrl」实际是数据点：B 样条用 make_interp_spline（必经过），
+    #   cubic/akima/pchip/poly 也都"必经过"这些点 + R1/R2 端点。
     if has_right:
         full_ctrl_x = np.concatenate([[r1_x], ctrl_x, [r2_x]])
         full_ctrl_y = np.concatenate([[r1_y], ctrl_y, [r2_y]])
@@ -515,7 +502,67 @@ def fit_middle_segment(
         full_ctrl_x = np.concatenate([[r1_x], ctrl_x])
         full_ctrl_y = np.concatenate([[r1_y], ctrl_y])
 
-    spline = make_interp_spline(full_ctrl_x, full_ctrl_y, k=k, bc_type=bc_type)
+    # ---- 3. 按方法构造 spline / 插值器 ----
+    if method == 'spline':
+        # B 样条：保留原 bc_type 逻辑（C1/C2 用 1/2 阶导数约束）
+        if continuity == "C2":
+            left_bc = [(1, r1_dy), (2, r1_ddy)]
+            if has_right:
+                right_bc = [(1, r2_dy), (2, r2_ddy)]
+            else:
+                right_bc = [(i, 0.0) for i in range(2, k - 1)]
+                if not right_bc:
+                    right_bc = None
+        else:  # C1
+            left_bc = [(1, r1_dy)]
+            if has_right:
+                right_bc = [(1, r2_dy)]
+            else:
+                right_bc = [(i, 0.0) for i in range(2, k)]
+                if not right_bc:
+                    right_bc = None
+        bc_type = (left_bc, right_bc)
+        spline = make_interp_spline(full_ctrl_x, full_ctrl_y, k=k, bc_type=bc_type)
+        actual_continuity = continuity
+    elif method == 'cubic':
+        # 三次样条：CubicSpline 用一阶导数 BC（两端 clamped）
+        if has_right:
+            spline = CubicSpline(
+                full_ctrl_x, full_ctrl_y,
+                bc_type=((1, r1_dy), (1, r2_dy)),
+            )
+        else:
+            spline = CubicSpline(
+                full_ctrl_x, full_ctrl_y,
+                bc_type=((1, r1_dy), 'not-a-knot'),
+            )
+        actual_continuity = 'C2'
+    elif method == 'akima':
+        spline = Akima1DInterpolator(full_ctrl_x, full_ctrl_y)
+        actual_continuity = 'C1'
+    elif method == 'pchip':
+        spline = PchipInterpolator(full_ctrl_x, full_ctrl_y)
+        actual_continuity = 'C1'
+    elif method == 'poly':
+        if len(full_ctrl_x) <= poly_deg:
+            raise ValueError(
+                f"多项式阶数 {poly_deg} 过高，需要至少 {poly_deg + 1} 个数据点，"
+                f"当前 {len(full_ctrl_x)} 个"
+            )
+        coeffs = np.polyfit(full_ctrl_x, full_ctrl_y, poly_deg)
+        p1d = np.poly1d(coeffs)
+        # 包装成支持 (x, nu=0) 调用的对象，与其他插值器 API 对齐
+        def _poly_call(x, nu=0, _p=p1d):
+            d = _p
+            for _ in range(nu):
+                d = d.deriv()
+            return d(x)
+        spline = _poly_call
+        actual_continuity = 'C2'
+    else:
+        raise ValueError(
+            f"未知 method: {method!r}，可选 'spline'/'cubic'/'akima'/'pchip'/'poly'"
+        )
 
     # ---- 4. 中段采样（不含 R1/R2 端点，避免与左右段重叠） ----
     if middle_resolution is None:
@@ -540,8 +587,11 @@ def fit_middle_segment(
     if not has_right and len(full_ctrl_x) >= 2:
         r2_x_real = float(full_ctrl_x[-1])
         r2_y_real = float(full_ctrl_y[-1])
-        r2_dy = float(spline(r2_x_real, 1))
-        r2_ddy = float(spline(r2_x_real, 2))
+        try:
+            r2_dy = float(spline(r2_x_real, 1))
+            r2_ddy = float(spline(r2_x_real, 2))
+        except Exception:
+            pass
         # 退化情形下 r2_x/y 用控制点末点（即原叶尖），UI 上显示"自由端"
         r2_x = r2_x_real
         r2_y = r2_y_real
@@ -564,9 +614,10 @@ def fit_middle_segment(
         r2_dy=r2_dy,
         r2_ddy=r2_ddy,
         has_right=has_right,
-        continuity=continuity,
+        continuity=actual_continuity,
         k=k,
         spline=spline,
+        method=method,
     )
 
 
